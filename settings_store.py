@@ -194,20 +194,16 @@ def save_settings(values):
 
 
 def record_domain_verdict(domain, useful):
-    """Atomically learn a domain verdict and keep the two lists mutually exclusive."""
+    """Learn useful domains without ever changing the user-managed blocklist."""
     domain = str(domain or "").strip().lower()
-    if not domain:
+    if not domain or not useful:
         return get_settings()
     with LOCK:
         current = get_settings()
         allowed = _domain_lines(current["allowed_domains"])
         blocked = _domain_lines(current["blocked_domains"])
-        if useful:
-            allowed.add(domain)
-            blocked.discard(domain)
-        else:
-            blocked.add(domain)
-            allowed.discard(domain)
+        allowed.add(domain)
+        blocked.discard(domain)
         current["allowed_domains"] = "\n".join(sorted(allowed))
         current["blocked_domains"] = "\n".join(sorted(blocked))
         SETTINGS_FILE.write_text(json.dumps(current, indent=2) + "\n")

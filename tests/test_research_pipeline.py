@@ -1,12 +1,30 @@
 import unittest
+import json
 from datetime import date
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from search import (best_passages, clean_queries, cosine_similarity, evidence_ledger,
                     extract_html, fetch_page, freshness_score, public_url, rank_candidates)
+import settings_store
 
 
 class ResearchPipelineTest(unittest.TestCase):
+    def test_unusable_domain_is_not_added_to_blocklist(self):
+        with TemporaryDirectory() as directory:
+            settings_file = Path(directory) / "settings.json"
+            settings_file.write_text(json.dumps({
+                "allowed_domains": "useful.example",
+                "blocked_domains": "manual.example",
+            }))
+            with patch.object(settings_store, "SETTINGS_FILE", settings_file):
+                settings_store.record_domain_verdict("failed.example", False)
+                saved = settings_store.get_settings()
+
+        self.assertEqual(saved["allowed_domains"], "useful.example")
+        self.assertEqual(saved["blocked_domains"], "manual.example")
+
     def test_rank_candidates_prefers_relevance_and_authority(self):
         candidates = [
             {"title": "Generic home page", "url": "https://example.com/", "snippet": "Welcome to our site", "query": "battery safety report"},
