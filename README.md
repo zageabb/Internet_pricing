@@ -31,6 +31,20 @@ cp settings.example.json settings.json
 
 Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The active port defaults to `5053`; override it with the `PORT` environment variable if needed.
 
+## Free procurement index
+
+The app searches a local SQLite/FTS index of free public OCDS data before using
+the configured web engines. Build or refresh it with:
+
+```bash
+python procurement_ingest.py
+```
+
+The systemd service and timer in `deploy/` refresh the last 14 days of Find a
+Tender data and the last two completed Sell2Wales calendar months each day.
+The SQLite database is stored at `instance/procurement.sqlite3` and is retained
+between application deployments.
+
 ## Notes
 
 - Search conversations remain private in browser local storage.

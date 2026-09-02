@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily refresh of Internet Pricing public procurement index
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=ollama-chat-internet-pricing-index.service
+
+[Install]
+WantedBy=timers.target

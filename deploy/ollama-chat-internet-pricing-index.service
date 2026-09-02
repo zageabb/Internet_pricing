@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Internet Pricing public procurement index
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/ollama-chat/internet-pricing
+Environment=PATH=%h/ollama-chat/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/ollama-chat/venv/bin/python %h/ollama-chat/internet-pricing/procurement_ingest.py --find-tender-days 14 --find-tender-max-pages 50 --sell2wales-months 2
+
