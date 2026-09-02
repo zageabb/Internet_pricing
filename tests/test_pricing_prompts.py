@@ -22,6 +22,8 @@ class PricingPromptTest(unittest.TestCase):
         self.assertIn("equipment-only", answer)
         self.assertIn("installed-package", answer)
         self.assertIn("date the price was obtained", answer)
+        self.assertIn("usd, eur, and gbp", answer)
+        self.assertIn("approximate", answer)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ HEADERS = {"User-Agent": "GeneralSearch/1.0 (+local research app)",
            "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9"}
 MAX_WEB_BYTES = 8_000_000
 MAX_REDIRECTS = 5
+FX_URL = "https://api.frankfurter.dev/v2/rates?base=EUR"
+FX_TARGETS = ("USD", "EUR", "GBP")
 
 
 def now():
@@ -210,6 +212,16 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                    steps=[f"Ollama model: {model}", "Route: knowledge fallback after web failure", f"Clarified request: {rewritten_question}", "Final answer reviewed"], completed_at=now())
             event(job_id, "phase", "returned", "Fallback answer completed", phase="Complete")
             return
+        if pricing_request(rewritten_question):
+            fx = currency_conversion_evidence(evidence)
+            if fx:
+                fx["source_id"] = len(evidence) + 1
+                evidence.append(fx)
+                event(job_id, "currency", "returned", "Loaded dated reference exchange rates",
+                      f"Approximate USD, EUR and GBP conversions · {fx['published_at']}", fx["url"])
+            else:
+                event(job_id, "currency", "failed", "Reference exchange rates unavailable",
+                      "Report will preserve source currencies without inventing conversions")
         evidence_text = evidence_ledger(evidence)
         answer_prompt = render(prompts["answer"], date=date.today(), market=market, scope=scope, query=effective_query,
                                rewritten_question=rewritten_question, requirements="; ".join(requirements) or "None specified",
@@ -439,6 +451,46 @@ def freshness_sensitive(query):
     current_year = str(date.today().year)
     return bool(query_terms & {"current", "currently", "latest", "recent", "today", "news", "price", "prices",
                                "law", "laws", "regulation", "regulations", "schedule", current_year})
+
+
+def pricing_request(query):
+    return bool(terms(query) & {"price", "prices", "pricing", "cost", "costs", "quote", "quotation", "budget",
+                                "estimate", "valuation", "rate", "rates", "tender", "procurement"})
+
+
+def currency_conversion_evidence(evidence):
+    """Build dated cross-rates into USD, EUR and GBP for currencies present in evidence."""
+    try:
+        response = requests.get(FX_URL, timeout=8)
+        response.raise_for_status()
+        rows = response.json()
+        rates = {str(row.get("quote") or "").upper(): float(row["rate"]) for row in rows
+                 if row.get("quote") and float(row.get("rate") or 0) > 0}
+        rates["EUR"] = 1.0
+        rate_date = max(str(row.get("date") or "") for row in rows)
+    except (requests.RequestException, TypeError, ValueError, KeyError):
+        return None
+
+    corpus = evidence_ledger(evidence)
+    codes = {code for code in rates if re.search(rf"(?<![A-Z]){re.escape(code)}(?![A-Z])", corpus.upper())}
+    if "$" in corpus:
+        codes.add("USD")
+    if "€" in corpus:
+        codes.add("EUR")
+    if "£" in corpus:
+        codes.add("GBP")
+    codes.update(FX_TARGETS)
+    codes &= rates.keys()
+
+    claims = []
+    for source in sorted(codes):
+        conversions = [f"1 {source} ≈ {rates[target] / rates[source]:.6g} {target}" for target in FX_TARGETS]
+        claims.append("; ".join(conversions))
+    url = f"{FX_URL}&quotes={','.join(sorted(codes))}"
+    return {"title": "Frankfurter dated reference exchange rates", "url": url, "query": "reference exchange rates",
+            "passages": [f"Reference rates dated {rate_date}. " + claim for claim in claims], "claims": claims,
+            "text": "\n".join(claims), "relevance": 0, "published_at": rate_date,
+            "obtained_at": date.today().isoformat(), "content_type": "application/json"}
 
 
 def freshness_score(value):

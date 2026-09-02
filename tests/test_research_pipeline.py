@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 from pathlib import Path
 
 from search import (best_passages, clean_queries, cosine_similarity, evidence_ledger,
-                    extract_html, fetch_page, freshness_score, market_context, public_url,
-                    rank_candidates)
+                    currency_conversion_evidence, extract_html, fetch_page, freshness_score,
+                    market_context, pricing_request, public_url, rank_candidates)
 import settings_store
 
 
@@ -19,6 +19,28 @@ class ResearchPipelineTest(unittest.TestCase):
     def test_specific_country_builds_market_context(self):
         settings = {"market_country": "GB", "market_region": "England", "market_city": "London"}
         self.assertEqual(market_context(settings), "London, England, GB")
+
+    def test_pricing_request_detection(self):
+        self.assertTrue(pricing_request("Provide a budget estimate for a transformer"))
+        self.assertFalse(pricing_request("Explain how a transformer works"))
+
+    @patch("search.requests.get")
+    def test_currency_conversion_evidence_builds_three_currency_cross_rates(self, get):
+        get.return_value.json.return_value = [
+            {"date": "2026-09-02", "base": "EUR", "quote": "EUR", "rate": 1.0},
+            {"date": "2026-09-02", "base": "EUR", "quote": "GBP", "rate": 0.8},
+            {"date": "2026-09-02", "base": "EUR", "quote": "USD", "rate": 1.2},
+            {"date": "2026-09-02", "base": "EUR", "quote": "JPY", "rate": 180.0},
+        ]
+        evidence = [{"source_id": 1, "title": "Price", "url": "https://example.com", "query": "price",
+                     "claims": ["The listed price is JPY 18,000."], "passages": []}]
+
+        fx = currency_conversion_evidence(evidence)
+
+        self.assertEqual(fx["published_at"], "2026-09-02")
+        self.assertTrue(any("1 JPY" in claim and "USD" in claim and "EUR" in claim and "GBP" in claim
+                            for claim in fx["claims"]))
+        get.return_value.raise_for_status.assert_called_once()
 
     def test_unusable_domain_is_not_added_to_blocklist(self):
         with TemporaryDirectory() as directory:

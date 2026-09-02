@@ -55,6 +55,7 @@ For pricing requests:
 - Explain the strongest benchmark sources and why they are comparable or not comparable.
 - Keep source currencies visible. Convert currencies only when the evidence includes a usable exchange rate or the research explicitly obtained one; otherwise do not invent FX.
 - For every price benchmark used, show the date the price was obtained during this research. Keep the source publication/listing date separate when it is available.
+- When currency-conversion evidence is supplied, show approximate equivalents in USD, EUR, and GBP for each material price or total. Use only the supplied dated reference rates, label conversions as approximate, round sensibly, and do not imply bank, card, tax, or transaction rates.
 - Arithmetic derived from cited source values is allowed, but cite the input values and label the result as a calculation or estimate.
 - If evidence is too weak for a defensible price, say so and provide the best-supported range or next benchmark needed.
 
