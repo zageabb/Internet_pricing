@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Internet Pricing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <style>
+    .chat-header { align-items: flex-start; }
+    .chat-header .controls { align-items: stretch; flex-direction: column; min-width: 180px; }
+    .chat-header .switch { display: flex; align-items: center; gap: 7px; padding: 0; white-space: normal; }
+    .chat-header .switch input { flex: 0 0 auto; width: auto; }
+    .document-picker { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .document-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .document-picker label { flex: 0 0 auto; padding: 8px 12px; }
+    .document-picker span, .attachments { color: var(--muted); font-size: 11px; }
+    .attachments { margin: 5px 0 10px; }
+    @media (max-width: 720px) { .chat-header .controls { display: none; } .save-chat { margin-left: auto; } }
+  </style>
+</head>
+<body>
+<div class="site-shell">
+  <nav class="app-nav">
+    <a class="brand-lockup" href="/"><span class="brand-mark">IP</span><span>Internet Pricing</span></a>
+    <div class="nav-links"><a class="active" href="/">Search</a><a href="/settings">Settings</a></div>
+  </nav>
+  <main>
+    <section class="research-shell" id="workspace" data-default-model="{{ settings.model }}">
+      <aside class="history-sidebar">
+        <div class="sidebar-header"><div><span class="eyebrow">Pricing + web</span><h1>Internet Pricing</h1></div><button class="btn primary small" id="new-chat">New chat</button></div>
+        <div id="history-list" class="history-list"></div>
+      </aside>
+      <div class="chat-main">
+        <header class="chat-header"><div class="min"><span class="label">Active conversation</span><h2 id="active-title">New research</h2></div><button class="btn outline save-chat" type="button" id="download" disabled>Save chat .md</button><div class="controls"><label>Model<select id="model"><option>{{ settings.model }}</option></select></label><label class="switch"><input type="checkbox" id="allowed-only"> Allowed sites only</label></div></header>
+        <div id="conversation" class="conversation" aria-live="polite"></div>
+        <form id="search-form" class="composer"><textarea id="query" rows="3" placeholder="Ask for a price, equipment budget, market benchmark, or other research…"></textarea><div class="document-picker"><label class="btn outline" for="documents">Attach documents</label><input id="documents" type="file" multiple accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.eml,.msg"><span id="document-status">No documents attached</span></div><div class="composer-footer"><span id="context-summary">0 messages in context</span><button class="btn primary" id="submit">Ask</button></div></form>
+      </div>
+      <aside class="runtime"><div class="runtime-header"><div><span class="label">Live research activity</span><strong id="phase">Ready</strong></div><span id="elapsed">0:00</span></div><div class="counts"><div><strong id="initiated">0</strong><span>Initiated</span></div><div><strong id="returned">0</strong><span>Returned</span></div><div><strong id="failed">0</strong><span>Failed</span></div></div><div id="events" class="events"><p>Research activity will appear here after you send a question.</p></div></aside>
+    </section>
+  </main>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body></html>

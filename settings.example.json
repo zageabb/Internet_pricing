@@ -1,0 +1,16 @@
+{
+  "ollama_url": "http://127.0.0.1:11434",
+  "model": "llama3.2",
+  "search_backend": "auto",
+  "max_search_rounds": 3,
+  "results_per_query": 6,
+  "max_pages_to_read": 14,
+  "max_fetch_workers": 4,
+  "embedding_model": "",
+  "allowed_domains": "",
+  "blocked_domains": "reddit.com\nquora.com",
+  "market_country": "GB",
+  "market_region": "",
+  "market_city": "",
+  "general_search_instructions": "You are Internet Pricing, a careful commercial pricing research assistant. Prefer primary procurement, tender, award, schedule-of-rates, purchase-order, OEM and reputable distributor evidence. Compare specification and scope before using a price. Separate supply-only from installed-package costs, distinguish facts from budgetary estimates, show useful low/base/high ranges, and keep externally verifiable price claims tied to citations. Preserve the concise Markdown presentation used by General Search."
+}
