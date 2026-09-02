@@ -25,6 +25,11 @@ def request_json(url):
     return response.json()
 
 
+def normalize_next_url(url):
+    """Escape literal timezone plus signs in pagination links emitted by FTS."""
+    return str(url or "").replace("+", "%2B")
+
+
 def ingest_find_tender(path, days, max_pages):
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -35,7 +40,7 @@ def ingest_find_tender(path, days, max_pages):
         payload = request_json(url)
         total += index_payload(payload, "find-tender", path)
         pages += 1
-        url = str((payload.get("links") or {}).get("next") or "")
+        url = normalize_next_url((payload.get("links") or {}).get("next"))
     return pages, total
 
 

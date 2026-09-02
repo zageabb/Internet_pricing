@@ -3,6 +3,15 @@ import requests
 import procurement_ingest
 
 
+def test_find_tender_next_url_escapes_timezone_plus_signs():
+    url = "https://example.test/feed?updatedFrom=2026-09-01T00:00:00+00:00&cursor=abc=="
+
+    normalized = procurement_ingest.normalize_next_url(url)
+
+    assert "00%2B00:00" in normalized
+    assert "cursor=abc==" in normalized
+
+
 def test_sell2wales_uses_documented_fallback(monkeypatch):
     calls = []
 
