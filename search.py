@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from io import BytesIO
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -91,7 +91,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         rewritten_question = clean_text(parsed.get("rewritten_question"), effective_query)
         requirements = clean_items(parsed.get("requirements", []), 8)
         subquestions = clean_items(parsed.get("subquestions", []), 5)
-        needs_web = parsed.get("needs_web") is True
+        needs_web = pricing_request(effective_query) or parsed.get("needs_web") is True
         queries = clean_queries(parsed.get("queries", []))
         if needs_web and not queries:
             queries = [query, f"{query} authoritative source", f"{query} {market}"]
@@ -126,14 +126,14 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
             for search_query in current_queries:
                 attempted_queries.append(search_query)
                 event(job_id, "search", "initiated", search_query)
-                try:
-                    rows = list(DDGS(timeout=12).text(search_query, region="wt-wt", safesearch="moderate", max_results=settings["results_per_query"], backend=settings["search_backend"]) or [])
-                    event(job_id, "search", "returned", search_query, f"{len(rows)} results returned")
-                except Exception as exc:
-                    event(job_id, "search", "failed", search_query, str(exc))
+                rows, engine_status = search_web(search_query, settings["search_backend"], settings["results_per_query"])
+                if not rows:
+                    event(job_id, "search", "failed", search_query, "; ".join(engine_status) or "No results")
                     continue
+                event(job_id, "search", "returned", search_query,
+                      f"{len(rows)} merged results · " + "; ".join(engine_status))
                 for row in rows:
-                    url = str(row.get("href") or "")
+                    url = canonical_url(str(row.get("href") or row.get("url") or ""))
                     host = hostname(url)
                     if not host or url in seen or any(host == d or host.endswith("." + d) for d in blocked):
                         continue
@@ -142,7 +142,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                     seen.add(url)
                     candidates.append({"title": str(row.get("title") or url), "url": url,
                                        "snippet": str(row.get("body") or ""), "query": search_query,
-                                       "published_at": str(row.get("date") or row.get("published") or "")})
+                                       "published_at": str(row.get("date") or row.get("published") or ""),
+                                       "search_backend": str(row.get("search_backend") or "")})
             candidates = subject_relevant_candidates(candidates, rewritten_question)
             ranked = rank_candidates(candidates, rewritten_question, requirements, subquestions)
             ranked = embedding_rerank(job_id, settings, ranked,
@@ -411,6 +412,55 @@ def hostname(url):
 
 def domains(value):
     return list(dict.fromkeys(filter(None, (hostname(x if "://" in x else "https://" + x) for x in re.split(r"[\n,]+", str(value))))))
+
+
+FREE_SEARCH_BACKENDS = ("duckduckgo", "mojeek", "startpage", "yahoo")
+
+
+def configured_search_backends(value):
+    requested = [item.strip().lower() for item in str(value or "auto").split(",") if item.strip()]
+    if not requested or requested == ["auto"]:
+        return list(FREE_SEARCH_BACKENDS)
+    return list(dict.fromkeys(requested))
+
+
+def search_web(query, backend_setting="auto", max_results=6):
+    """Merge two successful free search engines, falling through when one is unavailable."""
+    rows, seen, status, successes = [], set(), [], 0
+    for backend in configured_search_backends(backend_setting):
+        try:
+            found = list(DDGS(timeout=12).text(query, region="wt-wt", safesearch="moderate",
+                                               max_results=max_results, backend=backend) or [])
+            status.append(f"{backend}: {len(found)}")
+            if found:
+                successes += 1
+            for row in found:
+                url = canonical_url(str(row.get("href") or row.get("url") or ""))
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                item = dict(row)
+                item["href"] = url
+                item["search_backend"] = backend
+                rows.append(item)
+        except Exception as exc:
+            status.append(f"{backend}: {request_error(exc)}")
+        if successes >= 2:
+            break
+    return rows, status
+
+
+def canonical_url(url):
+    try:
+        parsed = urlparse(url.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        tracking = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"}
+        query = urlencode([(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                           if key.lower() not in tracking])
+        return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", query, ""))
+    except ValueError:
+        return ""
 
 
 STOP_WORDS = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in", "is", "it",

@@ -5,14 +5,37 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 from pathlib import Path
 
-from search import (best_passages, clean_queries, cosine_similarity, evidence_ledger,
+from search import (best_passages, canonical_url, clean_queries, configured_search_backends,
+                    cosine_similarity, evidence_ledger,
                     currency_conversion_evidence, extract_html, fetch_page, freshness_score,
                     has_commercial_price, market_context, pricing_queries, pricing_request,
-                    public_url, rank_candidates, subject_relevant_candidates)
+                    public_url, rank_candidates, search_web, subject_relevant_candidates)
 import settings_store
 
 
 class ResearchPipelineTest(unittest.TestCase):
+    def test_auto_search_uses_only_free_backends(self):
+        self.assertEqual(configured_search_backends("auto"), ["duckduckgo", "mojeek", "startpage", "yahoo"])
+
+    def test_canonical_url_removes_tracking_and_fragments(self):
+        url = canonical_url("HTTPS://Example.COM/report?ID=7&utm_source=test#section")
+        self.assertEqual(url, "https://example.com/report?ID=7")
+
+    @patch("search.DDGS")
+    def test_search_web_merges_and_deduplicates_two_free_engines(self, ddgs):
+        ddgs.return_value.text.side_effect = [
+            [{"title": "One", "href": "https://example.com/a?utm_source=x", "body": "first"}],
+            [{"title": "One duplicate", "href": "https://example.com/a", "body": "same"},
+             {"title": "Two", "href": "https://example.org/b", "body": "second"}],
+        ]
+
+        rows, status = search_web("switchboard price", "auto", 6)
+
+        self.assertEqual([row["href"] for row in rows], ["https://example.com/a", "https://example.org/b"])
+        self.assertEqual([row["search_backend"] for row in rows], ["duckduckgo", "mojeek"])
+        self.assertEqual(status, ["duckduckgo: 1", "mojeek: 2"])
+        self.assertEqual(ddgs.return_value.text.call_count, 2)
+
     def test_blank_or_global_country_uses_global_market(self):
         self.assertEqual(market_context({"market_country": ""}), "Global")
         self.assertEqual(market_context({"market_country": "Worldwide", "market_region": "Europe"}), "Global")
