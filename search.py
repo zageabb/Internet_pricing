@@ -119,7 +119,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         seen = set()
         attempted_queries = []
         current_queries = queries
-        for round_number in range(1, settings["max_search_rounds"] + 1):
+        max_rounds = 1 if pricing_request(rewritten_question) else settings["max_search_rounds"]
+        for round_number in range(1, max_rounds + 1):
             event(job_id, "phase", "running", f"Research round {round_number}", phase=f"Searching — round {round_number}")
             candidates = []
             for search_query in current_queries:
@@ -146,7 +147,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
             ranked = rank_candidates(candidates, rewritten_question, requirements, subquestions)
             ranked = embedding_rerank(job_id, settings, ranked,
                                       research_text(rewritten_question, requirements, subquestions))
-            remaining_rounds = settings["max_search_rounds"] - round_number + 1
+            remaining_rounds = max_rounds - round_number + 1
             remaining_pages = settings["max_pages_to_read"] - len(evidence)
             round_budget = remaining_pages if remaining_rounds == 1 else max(1, math.ceil(remaining_pages / remaining_rounds))
             retained_this_round = 0
@@ -166,7 +167,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                 if len(text.strip()) < 40:
                     event(job_id, "site", "unreadable", title, "No readable evidence", url)
                     continue
-                passages = best_passages(text, research_text(rewritten_question, requirements, subquestions), limit=5)
+                passages = best_passages(text, research_text(rewritten_question, requirements, subquestions),
+                                         limit=4, max_chars=6_000)
                 focused_text = "\n\n".join(passages) or text[:12_000]
                 verdict, reason, claims = analyse_source(prompts, settings, model, source_query, title, url, focused_text)
                 if verdict != "useful":
@@ -187,7 +189,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                 event(job_id, "reasoning", "returned", "Commercial benchmark found",
                       "Proceeding to the estimate without another search round")
                 break
-            if round_number == settings["max_search_rounds"] or len(evidence) >= settings["max_pages_to_read"]:
+            if round_number == max_rounds or len(evidence) >= settings["max_pages_to_read"]:
                 break
             coverage = assess_coverage(prompts, settings, model, rewritten_question, requirements, subquestions,
                                        attempted_queries, evidence)
@@ -762,7 +764,7 @@ def verify_citations(job_id, prompts, settings, model, rewritten_question, answe
 
 
 def analyse_source(prompts, settings, model, query, title, url, content):
-    prompt = render(prompts["source_review"], query=query, title=title, url=url, content=content[:12_000])
+    prompt = render(prompts["source_review"], query=query, title=title, url=url, content=content[:6_000])
     try:
         result = ollama_json(settings["ollama_url"], model, prompt)
     except Exception as exc:
