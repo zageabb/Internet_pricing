@@ -108,6 +108,8 @@ Return JSON only with:
 
 For pricing research, useful evidence can include concrete product prices, unit rates, schedules of rates, procurement/tender values, purchase orders, award values, commercial quotations published online, reputable distributor listings, and OEM/utility technical specifications needed to judge whether a priced benchmark is comparable. A technical OEM page can therefore be useful even without a price when it validates voltage, current, interrupting rating, configuration or platform capability. Prefer dated and identifiable evidence. Mark login walls, error pages, navigation/category pages, irrelevant pages, thin SEO copy, unsupported price-estimate blogs, generic marketing pages without relevant technical or commercial information, and content without usable query-related information as unusable. A differing price or viewpoint is not a reason to reject a source.
 
+Reject prices for a different equipment type merely sharing the same voltage or the word `disconnector`; for example, a surge-arrester disconnector or 132 kV cable termination is not evidence for an AIS bus disconnector/isolator with an earth switch.
+
 Research query: {{query}}
 Page title: {{title}}
 Page URL: {{url}}

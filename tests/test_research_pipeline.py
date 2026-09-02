@@ -31,10 +31,13 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertNotIn("global prices", joined)
         self.assertIn("132 kv 145 kv disconnector earth switch tender award", joined)
         self.assertIn("schedule of rates cost data pdf", joined)
+        self.assertIn("framework contract award lot value", joined)
 
     def test_subject_filter_removes_generic_price_results(self):
         candidates = [
             {"title": "Bitcoin global market price", "snippet": "BTC price today"},
+            {"title": "132 kV surge arrester disconnector", "snippet": "Surge arrester spare part"},
+            {"title": "132 kV cable termination price", "snippet": "Cable accessory quotation"},
             {"title": "132 kV disconnectors", "snippet": "Disconnector with earthing switch"},
         ]
         filtered = subject_relevant_candidates(candidates, "Pricing for 132 kV disconnectors with earthing")

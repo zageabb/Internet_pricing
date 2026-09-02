@@ -150,7 +150,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
             remaining_pages = settings["max_pages_to_read"] - len(evidence)
             round_budget = remaining_pages if remaining_rounds == 1 else max(1, math.ceil(remaining_pages / remaining_rounds))
             retained_this_round = 0
-            shortlist_size = min(len(ranked), max(round_budget + 2, settings["max_fetch_workers"]))
+            shortlist_size = min(len(ranked), max(settings["max_fetch_workers"], min(round_budget + 1, 5)))
             shortlist = ranked[:shortlist_size]
             fetched = fetch_pages(job_id, shortlist, settings["max_fetch_workers"])
             for candidate in shortlist:
@@ -183,6 +183,10 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                                  "content_type": page.get("content_type", "")})
                 retained_this_round += 1
                 event(job_id, "site", "returned", title, f"Source {source_id} retained · {reason}", url)
+            if pricing_request(rewritten_question) and has_commercial_price(evidence):
+                event(job_id, "reasoning", "returned", "Commercial benchmark found",
+                      "Proceeding to the estimate without another search round")
+                break
             if round_number == settings["max_search_rounds"] or len(evidence) >= settings["max_pages_to_read"]:
                 break
             coverage = assess_coverage(prompts, settings, model, rewritten_question, requirements, subquestions,
@@ -473,26 +477,36 @@ def pricing_queries(query, planned):
     base = " ".join(str(query).split())
     equipment = re.sub(r"\bpricing\s+for\b", "", base, flags=re.I).strip()
     equipment = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment, flags=re.I)
-    additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf"]
+    additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf",
+                 f"{equipment} framework contract award lot value"]
     voltage = re.search(r"\b132\s*k\s*v\b", equipment, re.I)
     if voltage:
         additions[0] = f"132 kV 145 kV disconnector earth switch tender award procurement price"
     vague = re.compile(r"^(global\s+prices?|market\s+price|earthing\s+system\s+cost)\b", re.I)
     kept = [item for item in planned if not vague.search(item)]
-    return clean_queries(kept + additions)
+    return clean_queries(additions + kept)
 
 
 def subject_relevant_candidates(candidates, question):
     """Drop results that match only generic words such as global, market, or price."""
     ignored = {"price", "prices", "pricing", "cost", "costs", "current", "global", "market", "value", "values",
                "specification", "specifications", "equipment", "including", "with", "for", "and", "the"}
-    anchors = {term.rstrip("s") for term in terms(question) if len(term) >= 4 and term not in ignored}
+    def stem(term):
+        if term.endswith("ing") and len(term) > 6:
+            term = term[:-3]
+        return term.rstrip("s")
+
+    anchors = {stem(term) for term in terms(question)
+               if len(term) >= 4 and term not in ignored and not any(character.isdigit() for character in term)}
     if not anchors:
         return candidates
     matched = []
     for candidate in candidates:
-        haystack = terms(f"{candidate.get('title', '')} {candidate.get('snippet', '')}")
-        normalized = haystack | {term.rstrip("s") for term in haystack if len(term) >= 4}
+        candidate_text = f"{candidate.get('title', '')} {candidate.get('snippet', '')}"
+        if "surge arrester" in candidate_text.lower() and "surge arrester" not in question.lower():
+            continue
+        haystack = terms(candidate_text)
+        normalized = haystack | {stem(term) for term in haystack if len(term) >= 4}
         if anchors & normalized:
             matched.append(candidate)
     return matched or candidates
