@@ -21,7 +21,7 @@ DEFAULTS = {
     "embedding_model": "",
     "allowed_domains": "",
     "blocked_domains": "reddit.com\nquora.com",
-    "market_country": "GB",
+    "market_country": "",
     "market_region": "",
     "market_city": "",
     "general_search_instructions": "You are Internet Pricing, a careful commercial pricing research assistant. Prefer primary procurement, tender, award, schedule-of-rates, purchase-order, OEM and reputable distributor evidence. Compare specification and scope before using a price. Separate supply-only from installed-package costs, distinguish facts from budgetary estimates, show useful low/base/high ranges, and keep externally verifiable price claims tied to citations. Preserve the concise Markdown presentation used by General Search.",
@@ -35,6 +35,8 @@ PLANNING = """Act as the request router for Internet Pricing, a capable general 
 - `queries`: 3 to 6 concise, complementary searches when `needs_web` is true, otherwise an empty list
 
 For pricing research, generate complementary searches rather than repeating the same wording. Include the exact item/specification and, where appropriate, searches aimed at public procurement, tender/award or purchase-order values, schedules of rates, OEM technical data, and reputable commercial listings. For high-value industrial equipment, try to establish both commercial benchmark evidence and technical comparability. Avoid `site:` filters unless the user explicitly requested a site. Do not assume a lower current rating or smaller accessory makes an HV/EHV platform proportionally cheaper.
+
+Keep searches manufacturer-neutral and generic unless the user explicitly names a manufacturer or asks to find or compare specific manufacturers. Do not introduce brand or manufacturer names merely to narrow a search. A blank country, or a country value such as `Global` or `Worldwide`, means the research scope is global; do not add a country restriction to queries in that case.
 
 Use model knowledge for timeless explanations, brainstorming, transformations, writing, and code that does not depend on current documentation. Use web research for changing facts, recommendations, prices, laws, news, current software/API behaviour, obscure facts, citations, or when the user asks to search.
 
@@ -52,6 +54,7 @@ For pricing requests:
 - Use a compact itemised table when quantities and unit budgets can be reasonably derived.
 - Explain the strongest benchmark sources and why they are comparable or not comparable.
 - Keep source currencies visible. Convert currencies only when the evidence includes a usable exchange rate or the research explicitly obtained one; otherwise do not invent FX.
+- For every price benchmark used, show the date the price was obtained during this research. Keep the source publication/listing date separate when it is available.
 - Arithmetic derived from cited source values is allowed, but cite the input values and label the result as a calculation or estimate.
 - If evidence is too weak for a defensible price, say so and provide the best-supported range or next benchmark needed.
 

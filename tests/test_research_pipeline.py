@@ -6,11 +6,20 @@ from unittest.mock import Mock, patch
 from pathlib import Path
 
 from search import (best_passages, clean_queries, cosine_similarity, evidence_ledger,
-                    extract_html, fetch_page, freshness_score, public_url, rank_candidates)
+                    extract_html, fetch_page, freshness_score, market_context, public_url,
+                    rank_candidates)
 import settings_store
 
 
 class ResearchPipelineTest(unittest.TestCase):
+    def test_blank_or_global_country_uses_global_market(self):
+        self.assertEqual(market_context({"market_country": ""}), "Global")
+        self.assertEqual(market_context({"market_country": "Worldwide", "market_region": "Europe"}), "Global")
+
+    def test_specific_country_builds_market_context(self):
+        settings = {"market_country": "GB", "market_region": "England", "market_city": "London"}
+        self.assertEqual(market_context(settings), "London, England, GB")
+
     def test_unusable_domain_is_not_added_to_blocklist(self):
         with TemporaryDirectory() as directory:
             settings_file = Path(directory) / "settings.json"
@@ -61,6 +70,7 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertIn("[1] Official report", ledger)
         self.assertIn("Incidents declined in 2026.", ledger)
         self.assertIn("Passage 1:", ledger)
+        self.assertRegex(ledger, r"Obtained: \d{4}-\d{2}-\d{2}")
 
     def test_clean_queries_rejects_malformed_model_output(self):
         self.assertEqual(clean_queries("not a JSON list"), [])

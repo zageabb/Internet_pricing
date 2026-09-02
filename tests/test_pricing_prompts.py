@@ -13,12 +13,15 @@ class PricingPromptTest(unittest.TestCase):
         self.assertIn("price", planning)
         self.assertIn("procurement", planning)
         self.assertIn("schedule", planning)
+        self.assertIn("manufacturer-neutral", planning)
+        self.assertIn("explicitly names a manufacturer", planning)
 
     def test_answer_prompt_preserves_budget_structure(self):
         answer = PROMPTS.defaults["answer"].lower()
         self.assertIn("low/base/high", answer)
         self.assertIn("equipment-only", answer)
         self.assertIn("installed-package", answer)
+        self.assertIn("date the price was obtained", answer)
 
 
 if __name__ == "__main__":

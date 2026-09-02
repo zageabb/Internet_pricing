@@ -73,7 +73,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
     try:
         settings = get_settings()
         model = model or settings["model"]
-        market = ", ".join(filter(None, [settings["market_city"], settings["market_region"], settings["market_country"]])) or "Global"
+        market = market_context(settings)
         allowed = domains(settings["allowed_domains"]) if allowed_only else []
         blocked = domains(settings["blocked_domains"])
         scope = "Only: " + ", ".join(allowed) if allowed else "Any public website except blocked domains"
@@ -174,6 +174,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                                  "passages": passages, "claims": claims, "text": focused_text[:12_000],
                                  "relevance": candidate["score"],
                                  "published_at": page.get("published_at") or candidate.get("published_at", ""),
+                                 "obtained_at": date.today().isoformat(),
                                  "content_type": page.get("content_type", "")})
                 retained_this_round += 1
                 event(job_id, "site", "returned", title, f"Source {source_id} retained · {reason}", url)
@@ -221,7 +222,9 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         answer = review_answer(job_id, prompts, settings, model, effective_query, rewritten_question,
                                requirements, subquestions, answer, evidence_text)
         answer = verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence)
-        sources = [{"source_id": x["source_id"], "title": x["title"], "url": x["url"]} for x in evidence]
+        sources = [{"source_id": x["source_id"], "title": x["title"], "url": x["url"],
+                    "published_at": x.get("published_at", ""), "obtained_at": x["obtained_at"]}
+                   for x in evidence]
         update(job_id, status="completed", phase="Complete", message=answer, sources=sources,
                steps=[f"Ollama model: {model}", f"Ran {len(attempted_queries)} targeted searches",
                       f"Retained {len(evidence)} ranked sources", "Evidence coverage and citations reviewed"], completed_at=now())
@@ -536,7 +539,8 @@ def evidence_ledger(evidence):
         claims = "\n".join(f"- {claim}" for claim in item.get("claims", [])) or "- No claims pre-extracted"
         passages = "\n\n".join(f"Passage {index}: {passage}" for index, passage in enumerate(item.get("passages", []), 1))
         published = f"\nPublished: {item['published_at']}" if item.get("published_at") else ""
-        rows.append(f"[{item['source_id']}] {item['title']}\nURL: {item['url']}\nFound via: {item['query']}{published}\n"
+        obtained = item.get("obtained_at") or date.today().isoformat()
+        rows.append(f"[{item['source_id']}] {item['title']}\nURL: {item['url']}\nFound via: {item['query']}{published}\nObtained: {obtained}\n"
                     f"Extracted claims:\n{claims}\nRelevant passages:\n{passages or item.get('text', '')}")
     return "\n\n---\n\n".join(rows)
 
@@ -545,6 +549,14 @@ def clean_queries(values):
     if not isinstance(values, list):
         return []
     return list(dict.fromkeys(" ".join(str(x).split())[:300] for x in values if str(x).strip()))
+
+
+def market_context(settings):
+    country = str(settings.get("market_country") or "").strip()
+    if not country or country.lower() in {"global", "worldwide", "world"}:
+        return "Global"
+    return ", ".join(filter(None, [str(settings.get("market_city") or "").strip(),
+                                    str(settings.get("market_region") or "").strip(), country]))
 
 
 def clean_items(values, limit):
