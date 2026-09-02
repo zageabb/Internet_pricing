@@ -15,6 +15,8 @@ class PricingPromptTest(unittest.TestCase):
         self.assertIn("schedule", planning)
         self.assertIn("manufacturer-neutral", planning)
         self.assertIn("explicitly names a manufacturer", planning)
+        self.assertIn("tender award", planning)
+        self.assertIn("145 kv-class", planning)
 
     def test_answer_prompt_preserves_budget_structure(self):
         answer = PROMPTS.defaults["answer"].lower()
@@ -24,6 +26,7 @@ class PricingPromptTest(unittest.TestCase):
         self.assertIn("date the price was obtained", answer)
         self.assertIn("usd, eur, and gbp", answer)
         self.assertIn("approximate", answer)
+        self.assertIn("not web-verified", answer)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from search import (best_passages, clean_queries, cosine_similarity, evidence_ledger,
                     currency_conversion_evidence, extract_html, fetch_page, freshness_score,
-                    market_context, pricing_request, public_url, rank_candidates)
+                    has_commercial_price, market_context, pricing_queries, pricing_request,
+                    public_url, rank_candidates, subject_relevant_candidates)
 import settings_store
 
 
@@ -23,6 +24,29 @@ class ResearchPipelineTest(unittest.TestCase):
     def test_pricing_request_detection(self):
         self.assertTrue(pricing_request("Provide a budget estimate for a transformer"))
         self.assertFalse(pricing_request("Explain how a transformer works"))
+
+    def test_pricing_queries_add_specific_commercial_benchmarks(self):
+        queries = pricing_queries("pricing for 132kv disconnectors with earthing", ["Global prices for disconnectors"])
+        joined = " ".join(queries).lower()
+        self.assertNotIn("global prices", joined)
+        self.assertIn("132 kv 145 kv disconnector earth switch tender award", joined)
+        self.assertIn("schedule of rates cost data pdf", joined)
+
+    def test_subject_filter_removes_generic_price_results(self):
+        candidates = [
+            {"title": "Bitcoin global market price", "snippet": "BTC price today"},
+            {"title": "132 kV disconnectors", "snippet": "Disconnector with earthing switch"},
+        ]
+        filtered = subject_relevant_candidates(candidates, "Pricing for 132 kV disconnectors with earthing")
+        self.assertEqual([row["title"] for row in filtered], ["132 kV disconnectors"])
+
+    def test_commercial_price_detection(self):
+        priced = [{"source_id": 1, "title": "Award", "url": "https://example.com", "query": "award",
+                   "claims": ["The lot value was GBP 91,380."], "passages": []}]
+        technical = [{"source_id": 1, "title": "Specification", "url": "https://example.com", "query": "spec",
+                      "claims": ["The rated voltage is 145 kV."], "passages": []}]
+        self.assertTrue(has_commercial_price(priced))
+        self.assertFalse(has_commercial_price(technical))
 
     @patch("search.requests.get")
     def test_currency_conversion_evidence_builds_three_currency_cross_rates(self, get):

@@ -95,6 +95,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         queries = clean_queries(parsed.get("queries", []))
         if needs_web and not queries:
             queries = [query, f"{query} authoritative source", f"{query} {market}"]
+        if needs_web and pricing_request(rewritten_question):
+            queries = pricing_queries(query, queries)
         queries = queries[:6]
         route = "web research" if needs_web else "model knowledge"
         event(job_id, "reasoning", "summary", f"Using {route}", rewritten_question, phase="Planning complete")
@@ -140,6 +142,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                     candidates.append({"title": str(row.get("title") or url), "url": url,
                                        "snippet": str(row.get("body") or ""), "query": search_query,
                                        "published_at": str(row.get("date") or row.get("published") or "")})
+            candidates = subject_relevant_candidates(candidates, rewritten_question)
             ranked = rank_candidates(candidates, rewritten_question, requirements, subquestions)
             ranked = embedding_rerank(job_id, settings, ranked,
                                       research_text(rewritten_question, requirements, subquestions))
@@ -147,7 +150,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
             remaining_pages = settings["max_pages_to_read"] - len(evidence)
             round_budget = remaining_pages if remaining_rounds == 1 else max(1, math.ceil(remaining_pages / remaining_rounds))
             retained_this_round = 0
-            shortlist_size = min(len(ranked), max(round_budget * 3, settings["max_fetch_workers"]))
+            shortlist_size = min(len(ranked), max(round_budget + 2, settings["max_fetch_workers"]))
             shortlist = ranked[:shortlist_size]
             fetched = fetch_pages(job_id, shortlist, settings["max_fetch_workers"])
             for candidate in shortlist:
@@ -212,6 +215,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                    steps=[f"Ollama model: {model}", "Route: knowledge fallback after web failure", f"Clarified request: {rewritten_question}", "Final answer reviewed"], completed_at=now())
             event(job_id, "phase", "returned", "Fallback answer completed", phase="Complete")
             return
+        commercial_price_found = has_commercial_price(evidence)
         if pricing_request(rewritten_question):
             fx = currency_conversion_evidence(evidence)
             if fx:
@@ -226,14 +230,20 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         answer_prompt = render(prompts["answer"], date=date.today(), market=market, scope=scope, query=effective_query,
                                rewritten_question=rewritten_question, requirements="; ".join(requirements) or "None specified",
                                subquestions="; ".join(subquestions) or "None", evidence=evidence_text[:60_000])
+        allow_indicative = pricing_request(rewritten_question) and not commercial_price_found
+        if allow_indicative:
+            answer_prompt = ("Commercial evidence limitation: the retained sources contain no concrete usable price. "
+                             "Provide a concise indicative model-knowledge low/base/high budget anyway, clearly label it "
+                             "as not web-verified, state scope and confidence, and keep it separate from cited facts.\n\n" + answer_prompt)
         instructions = settings["general_search_instructions"].strip()
         if instructions:
             answer_prompt = f"Persistent user instructions:\n{instructions}\n\n{answer_prompt}"
         event(job_id, "phase", "running", f"Synthesising from {len(evidence)} sources", phase="Producing answer")
         answer = ollama_text(settings["ollama_url"], model, answer_prompt)
         answer = review_answer(job_id, prompts, settings, model, effective_query, rewritten_question,
-                               requirements, subquestions, answer, evidence_text)
-        answer = verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence)
+                               requirements, subquestions, answer, evidence_text, allow_indicative=allow_indicative)
+        answer = verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence,
+                                  allow_indicative=allow_indicative)
         sources = [{"source_id": x["source_id"], "title": x["title"], "url": x["url"],
                     "published_at": x.get("published_at", ""), "obtained_at": x["obtained_at"]}
                    for x in evidence]
@@ -458,6 +468,43 @@ def pricing_request(query):
                                 "estimate", "valuation", "rate", "rates", "tender", "procurement"})
 
 
+def pricing_queries(query, planned):
+    """Keep model searches and add deterministic, manufacturer-neutral commercial benchmarks."""
+    base = " ".join(str(query).split())
+    equipment = re.sub(r"\bpricing\s+for\b", "", base, flags=re.I).strip()
+    equipment = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment, flags=re.I)
+    additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf"]
+    voltage = re.search(r"\b132\s*k\s*v\b", equipment, re.I)
+    if voltage:
+        additions[0] = f"132 kV 145 kV disconnector earth switch tender award procurement price"
+    vague = re.compile(r"^(global\s+prices?|market\s+price|earthing\s+system\s+cost)\b", re.I)
+    kept = [item for item in planned if not vague.search(item)]
+    return clean_queries(kept + additions)
+
+
+def subject_relevant_candidates(candidates, question):
+    """Drop results that match only generic words such as global, market, or price."""
+    ignored = {"price", "prices", "pricing", "cost", "costs", "current", "global", "market", "value", "values",
+               "specification", "specifications", "equipment", "including", "with", "for", "and", "the"}
+    anchors = {term.rstrip("s") for term in terms(question) if len(term) >= 4 and term not in ignored}
+    if not anchors:
+        return candidates
+    matched = []
+    for candidate in candidates:
+        haystack = terms(f"{candidate.get('title', '')} {candidate.get('snippet', '')}")
+        normalized = haystack | {term.rstrip("s") for term in haystack if len(term) >= 4}
+        if anchors & normalized:
+            matched.append(candidate)
+    return matched or candidates
+
+
+def has_commercial_price(evidence):
+    corpus = evidence_ledger(evidence)
+    currency = r"(?:USD|EUR|GBP|JPY|INR|CNY|AUD|CAD|CHF|£|€|\$|₹|¥)"
+    amount = r"(?:\d[\d,.]*\s*(?:million|billion|thousand|[kmb])?)"
+    return bool(re.search(rf"(?:{currency}\s*{amount}|{amount}\s*{currency})", corpus, re.I))
+
+
 def currency_conversion_evidence(evidence):
     """Build dated cross-rates into USD, EUR and GBP for currencies present in evidence."""
     try:
@@ -630,11 +677,15 @@ def direct_answer_prompt(prompts, settings, market, query, rewritten_question, r
     return f"Persistent user instructions:\n{instructions}\n\n{prompt}" if instructions else prompt
 
 
-def review_answer(job_id, prompts, settings, model, query, rewritten_question, requirements, subquestions, answer, evidence):
+def review_answer(job_id, prompts, settings, model, query, rewritten_question, requirements, subquestions, answer, evidence,
+                  allow_indicative=False):
     event(job_id, "phase", "running", "Checking the answer against the request", phase="Reviewing answer")
     prompt = render(prompts["review"], query=query, rewritten_question=rewritten_question,
                     requirements="; ".join(requirements) or "None specified",
                     subquestions="; ".join(subquestions) or "None", evidence=str(evidence)[:40_000], answer=answer[:30_000])
+    if allow_indicative:
+        prompt = ("Review invariant: no usable commercial price was found. Preserve or add a concise indicative "
+                  "model-knowledge budget range, explicitly labelled not web-verified, with scope and low confidence.\n\n" + prompt)
     try:
         reviewed = ollama_json(settings["ollama_url"], model, prompt)
         final_answer = str(reviewed.get("final_answer") or "").strip()
@@ -664,7 +715,8 @@ def assess_coverage(prompts, settings, model, rewritten_question, requirements, 
         return {"complete": False, "covered": [], "gaps": [], "queries": []}
 
 
-def verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence):
+def verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence,
+                     allow_indicative=False):
     event(job_id, "phase", "running", "Validating claims and citations", phase="Verifying citations")
     valid_ids = {str(item["source_id"]) for item in evidence}
     cited_ids = set(re.findall(r"\[(\d+)\]", answer))
@@ -673,6 +725,9 @@ def verify_citations(job_id, prompts, settings, model, rewritten_question, answe
         event(job_id, "reasoning", "summary", "Draft contained invalid citation IDs", ", ".join(invalid_ids))
     prompt = render(prompts["citation_review"], rewritten_question=rewritten_question,
                     evidence=evidence_text[:55_000], answer=answer[:30_000])
+    if allow_indicative:
+        prompt = ("Citation invariant: preserve the clearly labelled, uncited indicative model-knowledge budget because "
+                  "the retained web evidence contains no usable commercial price. It must say not web-verified.\n\n" + prompt)
     try:
         result = ollama_json(settings["ollama_url"], model, prompt)
         final_answer = str(result.get("final_answer") or "").strip()

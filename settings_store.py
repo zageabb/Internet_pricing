@@ -36,6 +36,8 @@ PLANNING = """Act as the request router for Internet Pricing, a capable general 
 
 For pricing research, generate complementary searches rather than repeating the same wording. Include the exact item/specification and, where appropriate, searches aimed at public procurement, tender/award or purchase-order values, schedules of rates, OEM technical data, and reputable commercial listings. For high-value industrial equipment, try to establish both commercial benchmark evidence and technical comparability. Avoid `site:` filters unless the user explicitly requested a site. Do not assume a lower current rating or smaller accessory makes an HV/EHV platform proportionally cheaper.
 
+Keep the equipment description in every pricing query. Never use vague searches such as `global prices`, `market price`, or `earthing system cost` without the actual equipment and rating. For grid equipment, search both the system voltage and its common equipment class where relevant (for example, 132 kV systems commonly use 145 kV-class equipment), and use equipment terminology such as `earth switch` as well as the user's wording. Include at least two concrete commercial-evidence searches using terms such as tender award, procurement, framework value, schedule of rates, cost data, purchase order, or price PDF.
+
 Keep searches manufacturer-neutral and generic unless the user explicitly names a manufacturer or asks to find or compare specific manufacturers. Do not introduce brand or manufacturer names merely to narrow a search. A blank country, or a country value such as `Global` or `Worldwide`, means the research scope is global; do not add a country restriction to queries in that case.
 
 Use model knowledge for timeless explanations, brainstorming, transformations, writing, and code that does not depend on current documentation. Use web research for changing facts, recommendations, prices, laws, news, current software/API behaviour, obscure facts, citations, or when the user asks to search.
@@ -58,6 +60,7 @@ For pricing requests:
 - When currency-conversion evidence is supplied, show approximate equivalents in USD, EUR, and GBP for each material price or total. Use only the supplied dated reference rates, label conversions as approximate, round sensibly, and do not imply bank, card, tax, or transaction rates.
 - Arithmetic derived from cited source values is allowed, but cite the input values and label the result as a calculation or estimate.
 - If evidence is too weak for a defensible price, say so and provide the best-supported range or next benchmark needed.
+- If the retained web evidence establishes the equipment/specification but contains no usable commercial price, still provide a concise, clearly labelled indicative model-knowledge budget range. State that it is not web-verified, keep it separate from cited facts, and lower the confidence rather than returning no price.
 
 Current date: {{date}}
 Market context: {{market}}
@@ -144,6 +147,7 @@ Rules:
 - Derived totals may be calculated from cited inputs; identify them as calculations or estimates.
 - Do not attach a citation merely because it discusses the same topic; its passage must support the claim.
 - Clearly label reasonable inference, budgetary estimation, uncertainty, disagreement, and missing evidence.
+- A clearly labelled, uncited model-knowledge budget range is permitted only when the evidence contains no usable commercial price. It must say that it is indicative and not web-verified; do not remove it merely for lacking a citation.
 
 Clarified request: {{rewritten_question}}
 
