@@ -535,9 +535,15 @@ def rank_candidates(candidates, question, requirements=None, subquestions=None):
                              host.endswith(".ac.uk")) else 0.0
         path = urlparse(candidate.get("url", "")).path.lower()
         primary_hint = 0.6 if any(token in path for token in ("/docs", "/documentation", "/research", "/report", "/news")) else 0.0
+        commercial_text = f"{candidate.get('title', '')} {candidate.get('snippet', '')}".lower()
+        commercial_hint = 1.4 if (re.search(r"(?:gbp|usd|eur|£|€|\$)\s*[\d,.]+", commercial_text) or
+                                          any(token in commercial_text for token in
+                                              ("award value", "lot value", "estimated value", "unit rate"))) else 0.0
+        structured_hint = 1.0 if str(candidate.get("search_backend", "")).startswith("procurement-index:") else 0.0
         freshness = freshness_score(candidate.get("published_at", "")) if freshness_sensitive(question) else 0.0
         candidate = dict(candidate)
-        candidate["score"] = round(overlap / denominator + authority + primary_hint + freshness, 3)
+        candidate["score"] = round(overlap / denominator + authority + primary_hint + commercial_hint +
+                                   structured_hint + freshness, 3)
         scored.append(candidate)
     scored.sort(key=lambda item: (-item["score"], item.get("title", "").lower()))
     return diversify(scored)

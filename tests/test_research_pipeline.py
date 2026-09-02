@@ -56,6 +56,14 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertIn("schedule of rates cost data pdf", joined)
         self.assertIn("framework contract award lot value", joined)
 
+    def test_switchboard_pricing_queries_preserve_configuration(self):
+        request = "pricing for 11kV AIS 3000A switchboard, 25kA, 2 incomers 2000A and 12 feeders"
+        queries = pricing_queries(request, [])
+        joined = " ".join(queries).lower()
+        self.assertIn("11kv ais 3000a switchboard", joined)
+        self.assertIn("25ka", joined)
+        self.assertIn("tender award procurement price", joined)
+
     def test_subject_filter_removes_generic_price_results(self):
         candidates = [
             {"title": "Bitcoin global market price", "snippet": "BTC price today"},
@@ -116,6 +124,19 @@ class ResearchPipelineTest(unittest.TestCase):
 
         self.assertEqual(ranked[0]["url"], "https://agency.gov.uk/research/battery-safety")
         self.assertEqual([row["rank"] for row in ranked], [1, 2])
+
+    def test_rank_candidates_prioritizes_structured_commercial_notice(self):
+        candidates = [
+            {"title": "11 kV switchboard specification", "url": "https://example.com/spec",
+             "snippet": "Technical requirements for an AIS switchboard", "query": "11 kV switchboard"},
+            {"title": "11 kV main intake switchboard", "url": "https://notices.gov.uk/award",
+             "snippet": "Estimated value GBP 500000 including manufacture, erection and commissioning",
+             "query": "11 kV switchboard", "search_backend": "procurement-index:find-tender"},
+        ]
+
+        ranked = rank_candidates(candidates, "pricing for an 11 kV AIS switchboard")
+
+        self.assertEqual(ranked[0]["url"], "https://notices.gov.uk/award")
 
     def test_best_passages_finds_relevant_text_beyond_page_start(self):
         content = "\n".join([

@@ -49,6 +49,24 @@ class ProcurementIndexTest(unittest.TestCase):
         self.assertIn("120000 GBP", results[0]["indexed_text"])
         self.assertNotIn("90000 GBP", results[0]["indexed_text"])
 
+    def test_known_switchboard_case_does_not_match_unrelated_notice_first(self):
+        relevant = {"id": "switchboard", "ocid": "ocds-switchboard", "tender": {
+            "title": "11 kV main intake switchboard upgrade",
+            "description": "Design and manufacture of an AIS board with 18 circuit breakers and 2000 A busbars",
+            "value": {"amount": 500000, "currency": "GBP"},
+        }}
+        unrelated = {"id": "software", "ocid": "ocds-software", "tender": {
+            "title": "Hospital software upgrade",
+            "description": "Global pricing and support contract",
+            "value": {"amount": 900000, "currency": "GBP"},
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "procurement.sqlite3"
+            index_payload({"releases": [unrelated, relevant]}, "test", database)
+            results = search_procurement("11 kV AIS 2000 A switchboard pricing", path=database)
+
+        self.assertEqual(results[0]["title"], "11 kV main intake switchboard upgrade")
+
 
 if __name__ == "__main__":
     unittest.main()
