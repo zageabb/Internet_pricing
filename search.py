@@ -17,6 +17,7 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 
+from procurement_index import search_procurement
 from settings_store import PROMPTS, get_settings, record_domain_verdict, render
 
 
@@ -123,6 +124,21 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         for round_number in range(1, max_rounds + 1):
             event(job_id, "phase", "running", f"Research round {round_number}", phase=f"Searching — round {round_number}")
             candidates = []
+            if round_number == 1 and pricing_request(rewritten_question):
+                indexed = search_procurement(rewritten_question, limit=max(10, settings["results_per_query"] * 2))
+                event(job_id, "index", "returned", "Searched local procurement index",
+                      f"{len(indexed)} structured notices returned")
+                for row in indexed:
+                    url = canonical_url(str(row.get("url") or ""))
+                    if not url or url in seen:
+                        continue
+                    host = hostname(url)
+                    if any(host == domain or host.endswith("." + domain) for domain in blocked):
+                        continue
+                    seen.add(url)
+                    item = dict(row)
+                    item["url"] = url
+                    candidates.append(item)
             for search_query in current_queries:
                 attempted_queries.append(search_query)
                 event(job_id, "search", "initiated", search_query)
@@ -289,6 +305,11 @@ def fetch_pages(job_id, candidates, workers):
             event(job_id, "site", "initiated", candidate["title"],
                   f"Opening candidate ranked {candidate['rank']} · relevance {candidate['score']:.2f}",
                   candidate["url"], "Reading sites")
+            if candidate.get("indexed_text"):
+                results[candidate["url"]] = {"text": candidate["indexed_text"], "url": candidate["url"],
+                                              "content_type": candidate.get("content_type", "application/ocds+json"),
+                                              "published_at": candidate.get("published_at", "")}
+                continue
             future_map[executor.submit(fetch_page, candidate["url"])] = candidate["url"]
         for future in as_completed(future_map):
             url = future_map[future]
