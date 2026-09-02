@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 
 from procurement_index import search_procurement
+from retrieval_cache import load_page, store_page
 from settings_store import PROMPTS, get_settings, record_domain_verdict, render
 
 
@@ -178,8 +179,13 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                 source_id = len(evidence) + 1
                 page = fetched.get(url, {})
                 if page.get("error"):
-                    event(job_id, "site", "failed", title, page["error"], url)
-                    continue
+                    if len(snippet.strip()) < 80:
+                        event(job_id, "site", "failed", title, page["error"], url)
+                        continue
+                    event(job_id, "site", "partial", title,
+                          f"Page unavailable ({page['error']}); evaluating indexed search passage", url)
+                    page = {"text": snippet, "url": url, "content_type": "text/search-snippet",
+                            "published_at": candidate.get("published_at", "")}
                 text = page.get("text") or snippet
                 if len(text.strip()) < 40:
                     event(job_id, "site", "unreadable", title, "No readable evidence", url)
@@ -321,6 +327,23 @@ def fetch_pages(job_id, candidates, workers):
 
 
 def fetch_page(url):
+    """Fetch a public page with a positive cache and stale fallback for temporary failures."""
+    cached = load_page(url)
+    if cached:
+        return cached
+    try:
+        result = fetch_page_live(url)
+    except requests.RequestException:
+        stale = load_page(url, allow_stale=True)
+        if stale:
+            return stale
+        raise
+    if result.get("text"):
+        store_page(url, result)
+    return result
+
+
+def fetch_page_live(url):
     """Fetch a bounded public HTML or PDF page, validating every redirect target."""
     current = url
     response = None
