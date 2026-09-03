@@ -93,11 +93,12 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         rewritten_question = clean_text(parsed.get("rewritten_question"), effective_query)
         requirements = clean_items(parsed.get("requirements", []), 8)
         subquestions = clean_items(parsed.get("subquestions", []), 5)
-        needs_web = pricing_request(effective_query) or parsed.get("needs_web") is True
+        is_pricing = pricing_intent(effective_query, rewritten_question)
+        needs_web = is_pricing or parsed.get("needs_web") is True
         queries = clean_queries(parsed.get("queries", []))
         if needs_web and not queries:
             queries = [query, f"{query} authoritative source", f"{query} {market}"]
-        if needs_web and pricing_request(rewritten_question):
+        if needs_web and is_pricing:
             queries = pricing_queries(query, queries)
         queries = queries[:6]
         route = "web research" if needs_web else "model knowledge"
@@ -121,11 +122,11 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         seen = set()
         attempted_queries = []
         current_queries = queries
-        max_rounds = 1 if pricing_request(rewritten_question) else settings["max_search_rounds"]
+        max_rounds = 1 if is_pricing else settings["max_search_rounds"]
         for round_number in range(1, max_rounds + 1):
             event(job_id, "phase", "running", f"Research round {round_number}", phase=f"Searching — round {round_number}")
             candidates = []
-            if round_number == 1 and pricing_request(rewritten_question):
+            if round_number == 1 and is_pricing:
                 indexed = search_procurement(rewritten_question, limit=max(10, settings["results_per_query"] * 2))
                 event(job_id, "index", "returned", "Searched local procurement index",
                       f"{len(indexed)} structured notices returned")
@@ -208,7 +209,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                                  "content_type": page.get("content_type", "")})
                 retained_this_round += 1
                 event(job_id, "site", "returned", title, f"Source {source_id} retained · {reason}", url)
-            if pricing_request(rewritten_question) and has_commercial_price(evidence):
+            if is_pricing and has_commercial_price(evidence):
                 event(job_id, "reasoning", "returned", "Commercial benchmark found",
                       "Proceeding to the estimate without another search round")
                 break
@@ -245,7 +246,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
             event(job_id, "phase", "returned", "Fallback answer completed", phase="Complete")
             return
         commercial_price_found = has_commercial_price(evidence)
-        if pricing_request(rewritten_question):
+        if is_pricing:
             fx = currency_conversion_evidence(evidence)
             if fx:
                 fx["source_id"] = len(evidence) + 1
@@ -259,7 +260,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         answer_prompt = render(prompts["answer"], date=date.today(), market=market, scope=scope, query=effective_query,
                                rewritten_question=rewritten_question, requirements="; ".join(requirements) or "None specified",
                                subquestions="; ".join(subquestions) or "None", evidence=evidence_text[:60_000])
-        allow_indicative = pricing_request(rewritten_question) and not commercial_price_found
+        allow_indicative = is_pricing and not commercial_price_found
         if allow_indicative:
             answer_prompt = ("Commercial evidence limitation: the retained sources contain no concrete usable price. "
                              "Provide a concise indicative model-knowledge low/base/high budget anyway, clearly label it "
@@ -499,6 +500,9 @@ def canonical_url(url):
         parsed = urlparse(url.strip())
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return ""
+        host = (parsed.hostname or "").lower()
+        if (host.endswith("bing.com") and parsed.path.startswith("/aclick")) or "doubleclick.net" in host:
+            return ""
         tracking = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"}
         query = urlencode([(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
                            if key.lower() not in tracking])
@@ -523,6 +527,9 @@ def research_text(question, requirements, subquestions):
 def rank_candidates(candidates, question, requirements=None, subquestions=None):
     """Rank search results for relevance, authority, and source diversity."""
     target = terms(research_text(question, requirements or [], subquestions or []))
+    generic = {"price", "prices", "pricing", "cost", "costs", "current", "market", "buy", "deal",
+               "deals", "new", "laptop", "computer"}
+    anchors = {term for term in terms(question) if term not in generic}
     scored = []
     for candidate in candidates:
         title_terms = terms(candidate.get("title", ""))
@@ -540,10 +547,12 @@ def rank_candidates(candidates, question, requirements=None, subquestions=None):
                                           any(token in commercial_text for token in
                                               ("award value", "lot value", "estimated value", "unit rate"))) else 0.0
         structured_hint = 1.0 if str(candidate.get("search_backend", "")).startswith("procurement-index:") else 0.0
+        matched_anchors = anchors & (title_terms | snippet_terms)
+        exact_hint = 2.5 if anchors and len(matched_anchors) / len(anchors) >= 0.75 else 0.0
         freshness = freshness_score(candidate.get("published_at", "")) if freshness_sensitive(question) else 0.0
         candidate = dict(candidate)
         candidate["score"] = round(overlap / denominator + authority + primary_hint + commercial_hint +
-                                   structured_hint + freshness, 3)
+                                   structured_hint + exact_hint + freshness, 3)
         scored.append(candidate)
     scored.sort(key=lambda item: (-item["score"], item.get("title", "").lower()))
     return diversify(scored)
@@ -574,18 +583,31 @@ def pricing_request(query):
                                 "estimate", "valuation", "rate", "rates", "tender", "procurement"})
 
 
+def pricing_intent(original_query, rewritten_question):
+    """A planner rewrite may clarify a product but must never erase pricing intent."""
+    return pricing_request(original_query) or pricing_request(rewritten_question)
+
+
 def pricing_queries(query, planned):
-    """Keep model searches and add deterministic, manufacturer-neutral commercial benchmarks."""
+    """Preserve the requested item/specification in deterministic commercial searches."""
     base = " ".join(str(query).split())
     equipment = re.sub(r"\bpricing\s+for\b", "", base, flags=re.I).strip()
     equipment = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment, flags=re.I)
-    additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf",
-                 f"{equipment} framework contract award lot value"]
+    industrial_terms = {"kv", "switchgear", "transformer", "disconnector", "substation", "tender", "procurement",
+                        "cable", "generator", "motor", "pump", "compressor", "gis", "ais"}
+    normalized_equipment = re.sub(r"(?<=\d)\s+(?=(?:gb|tb|kv|ka|a)\b)", "", equipment, flags=re.I)
+    if terms(equipment) & industrial_terms or re.search(r"\b\d+\s*k[va]\b", equipment, re.I):
+        additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf",
+                     f"{equipment} framework contract award lot value"]
+    else:
+        additions = [f"{normalized_equipment} price", f"{normalized_equipment} buy online",
+                     f"{normalized_equipment} retailer"]
     voltage = re.search(r"\b132\s*k\s*v\b", equipment, re.I)
     if voltage:
         additions[0] = f"132 kV 145 kV disconnector earth switch tender award procurement price"
     vague = re.compile(r"^(global\s+prices?|market\s+price|earthing\s+system\s+cost)\b", re.I)
-    kept = [item for item in planned if not vague.search(item)]
+    anchors = {term for term in terms(normalized_equipment) if term not in {"price", "pricing", "cost"}}
+    kept = [item for item in planned if not vague.search(item) and anchors.issubset(terms(item))]
     return clean_queries(additions + kept)
 
 

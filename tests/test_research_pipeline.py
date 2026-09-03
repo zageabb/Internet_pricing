@@ -8,7 +8,7 @@ from pathlib import Path
 from search import (best_passages, canonical_url, clean_queries, configured_search_backends,
                     cosine_similarity, evidence_ledger,
                     currency_conversion_evidence, extract_html, fetch_page, freshness_score,
-                    has_commercial_price, market_context, pricing_queries, pricing_request,
+                    has_commercial_price, market_context, pricing_intent, pricing_queries, pricing_request,
                     public_url, rank_candidates, search_web, subject_relevant_candidates)
 import settings_store
 
@@ -20,6 +20,9 @@ class ResearchPipelineTest(unittest.TestCase):
     def test_canonical_url_removes_tracking_and_fragments(self):
         url = canonical_url("HTTPS://Example.COM/report?ID=7&utm_source=test#section")
         self.assertEqual(url, "https://example.com/report?ID=7")
+
+    def test_canonical_url_rejects_search_ad_redirects(self):
+        self.assertEqual(canonical_url("https://www.bing.com/aclick?u=retailer"), "")
 
     @patch("search.DDGS")
     def test_search_web_merges_and_deduplicates_two_free_engines(self, ddgs):
@@ -48,6 +51,12 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(pricing_request("Provide a budget estimate for a transformer"))
         self.assertFalse(pricing_request("Explain how a transformer works"))
 
+    def test_planner_rewrite_cannot_erase_original_pricing_intent(self):
+        self.assertTrue(pricing_intent(
+            "pricing for Lenovo V15, 16GB, 512GB laptop",
+            "Lenovo V15 laptop with 16GB RAM and 512GB storage",
+        ))
+
     def test_pricing_queries_add_specific_commercial_benchmarks(self):
         queries = pricing_queries("pricing for 132kv disconnectors with earthing", ["Global prices for disconnectors"])
         joined = " ".join(queries).lower()
@@ -63,6 +72,32 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertIn("11kv ais 3000a switchboard", joined)
         self.assertIn("25ka", joined)
         self.assertIn("tender award procurement price", joined)
+
+    def test_consumer_pricing_queries_preserve_exact_product_attributes(self):
+        queries = pricing_queries(
+            "lenovo v15, 16gb, 512Gb laptop",
+            ["Lenovo V15 specs", "16GB RAM laptop prices", "512GB storage deals"],
+        )
+
+        self.assertEqual(len(queries), 3)
+        for query in queries:
+            lowered = query.lower()
+            self.assertIn("lenovo", lowered)
+            self.assertIn("v15", lowered)
+            self.assertIn("16gb", lowered)
+            self.assertIn("512gb", lowered)
+
+    def test_exact_product_listing_outranks_generic_laptop(self):
+        candidates = [
+            {"title": "16GB business laptops", "url": "https://generic.example/laptops",
+             "snippet": "Many computers with 512GB storage", "query": "laptop price"},
+            {"title": "Lenovo V15 16GB 512GB laptop", "url": "https://retailer.example/lenovo-v15",
+             "snippet": "Lenovo V15 laptop available now", "query": "Lenovo V15 16GB 512GB price"},
+        ]
+
+        ranked = rank_candidates(candidates, "pricing for Lenovo V15, 16GB, 512GB laptop")
+
+        self.assertEqual(ranked[0]["url"], "https://retailer.example/lenovo-v15")
 
     def test_subject_filter_removes_generic_price_results(self):
         candidates = [
