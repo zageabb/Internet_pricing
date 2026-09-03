@@ -645,6 +645,7 @@ def pricing_queries(query, planned, category=None):
     """Preserve the requested item/specification in deterministic commercial searches."""
     base = " ".join(str(query).split())
     equipment = re.sub(r"\bpricing\s+for\b", "", base, flags=re.I).strip()
+    equipment = re.sub(r"\b(?:price|pricing|cost)\s*$", "", equipment, flags=re.I).strip(" ,;:-")
     equipment = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment, flags=re.I)
     category = category or pricing_category(query)
     normalized_equipment = re.sub(r"(?<=\d)\s+(?=(?:gb|tb|kv|ka|a)\b)", "", equipment, flags=re.I)

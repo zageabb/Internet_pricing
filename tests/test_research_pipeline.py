@@ -111,6 +111,8 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertIn("manufacturer distributor price", industrial)
         self.assertIn("schedule of rates", service)
         self.assertIn("supplier distributor", general)
+        self.assertNotIn("price price", " ".join(pricing_queries(
+            "stainless steel storage cabinet price", [], "general-product")).lower())
 
     def test_exact_product_listing_outranks_generic_laptop(self):
         candidates = [
