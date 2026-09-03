@@ -4,6 +4,8 @@ Internet Pricing is a pricing-focused fork of [General Search](https://github.co
 
 The application is intended for difficult-to-price equipment and project packages where a simple retail search is not enough. It can search public procurement documents, schedules of rates, tender awards, purchase-order benchmarks, OEM technical pages, distributor listings and other relevant public evidence, then compare specification and scope before producing a cited budgetary estimate.
 
+The pricing core works across product types. It selects a deterministic strategy for consumer/retail products, industrial products, HV equipment, services/projects, or a general product, while retaining the same evidence, date, currency-conversion and model-knowledge fallback rules. Because this is a pricing application, a bare recognised product description such as `Lenovo V15 16GB 512GB laptop` is treated as a request to find its price.
+
 ## Pricing behaviour
 
 For pricing requests the assistant is instructed to:
@@ -18,6 +20,14 @@ For pricing requests the assistant is instructed to:
 - If searches return no readable evidence, fall back to model knowledge instead of returning nothing. Any pricing from that fallback is explicitly labelled indicative, not web-verified, and low confidence.
 - Clearly label estimates and assumptions and keep externally verifiable price claims tied to citations.
 - Preserve the General Search answer presentation: concise Markdown, tables where useful, inline source references and a source list.
+
+Category strategies are deliberately separate:
+
+- Consumer products prioritise exact model/specification retailer listings.
+- Industrial products prioritise manufacturer and distributor catalogues, quotations and procurement evidence.
+- HV equipment prioritises utility tenders, awards, frameworks and schedules while comparing ratings and scope.
+- Services and projects prioritise labour/day rates, schedules of rates, awards, geography and inclusions.
+- Other products begin with exact-description supplier, distributor and catalogue searches.
 
 A request such as `Find a price for 400 kV GIS switchgear, 2 incomers 2000 A and 6 feeders 630 A` should therefore trigger searches for current 400/420 kV GIS quotations or procurement benchmarks, comparable bay configurations and OEM technical context, then return a structured budget estimate with source-backed reasoning.
 

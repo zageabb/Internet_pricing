@@ -8,7 +8,8 @@ from pathlib import Path
 from search import (best_passages, canonical_url, clean_queries, configured_search_backends,
                     cosine_similarity, evidence_ledger,
                     currency_conversion_evidence, exact_priced_product_candidate, extract_html, fetch_page, freshness_score,
-                    has_commercial_price, market_context, pricing_intent, pricing_queries, pricing_request,
+                    has_commercial_price, implicit_product_pricing, market_context, pricing_category,
+                    pricing_intent, pricing_queries, pricing_request, pricing_strategy_context,
                     public_url, rank_candidates, search_web, subject_relevant_candidates)
 import settings_store
 
@@ -57,6 +58,21 @@ class ResearchPipelineTest(unittest.TestCase):
             "Lenovo V15 laptop with 16GB RAM and 512GB storage",
         ))
 
+    def test_bare_product_description_implies_pricing_in_this_app(self):
+        self.assertTrue(implicit_product_pricing("Lenovo V15 16GB 512GB laptop"))
+        self.assertTrue(implicit_product_pricing("BenQ 27 inch monitor"))
+        self.assertTrue(implicit_product_pricing("132 kV disconnector with earth switch"))
+        self.assertFalse(implicit_product_pricing("Explain how a laptop works"))
+
+    def test_pricing_categories_cover_general_and_specialist_products(self):
+        self.assertEqual(pricing_category("132 kV disconnector with earth switch"), "hv-equipment")
+        self.assertEqual(pricing_category("Lenovo V15 laptop"), "consumer-retail")
+        self.assertEqual(pricing_category("industrial compressor 250 kW"), "industrial")
+        self.assertEqual(pricing_category("substation installation labour"), "hv-equipment")
+        self.assertEqual(pricing_category("office cleaning service"), "service-project")
+        self.assertEqual(pricing_category("stainless steel storage cabinet"), "general-product")
+        self.assertIn("utility procurement", pricing_strategy_context("hv-equipment"))
+
     def test_pricing_queries_add_specific_commercial_benchmarks(self):
         queries = pricing_queries("pricing for 132kv disconnectors with earthing", ["Global prices for disconnectors"])
         joined = " ".join(queries).lower()
@@ -86,6 +102,15 @@ class ResearchPipelineTest(unittest.TestCase):
             self.assertIn("v15", lowered)
             self.assertIn("16gb", lowered)
             self.assertIn("512gb", lowered)
+
+    def test_each_category_uses_its_own_evidence_searches(self):
+        industrial = " ".join(pricing_queries("250 kW industrial compressor", [], "industrial")).lower()
+        service = " ".join(pricing_queries("office cleaning service", [], "service-project")).lower()
+        general = " ".join(pricing_queries("stainless steel storage cabinet", [], "general-product")).lower()
+
+        self.assertIn("manufacturer distributor price", industrial)
+        self.assertIn("schedule of rates", service)
+        self.assertIn("supplier distributor", general)
 
     def test_exact_product_listing_outranks_generic_laptop(self):
         candidates = [
@@ -119,6 +144,11 @@ class ResearchPipelineTest(unittest.TestCase):
         filtered = subject_relevant_candidates(candidates, "Lenovo V15 16GB 512GB laptop price")
 
         self.assertEqual([row["title"] for row in filtered], ["Lenovo V15 16GB 512GB"])
+
+    def test_consumer_filter_does_not_restore_random_pages_when_no_exact_match_exists(self):
+        candidates = [{"title": "Generic monitors", "snippet": "Displays from many manufacturers"}]
+
+        self.assertEqual(subject_relevant_candidates(candidates, "BenQ PD2705Q monitor price"), [])
 
     def test_exact_consumer_product_with_visible_price_is_retained_deterministically(self):
         candidate = {"title": "Lenovo V15 16GB 512GB SSD", "snippet": "Available for £429.99"}

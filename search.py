@@ -93,16 +93,22 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         rewritten_question = clean_text(parsed.get("rewritten_question"), effective_query)
         requirements = clean_items(parsed.get("requirements", []), 8)
         subquestions = clean_items(parsed.get("subquestions", []), 5)
-        is_pricing = pricing_intent(effective_query, rewritten_question)
+        category_query = query if query.strip() else effective_query
+        inferred_category = pricing_category(category_query)
+        is_pricing = pricing_intent(effective_query, rewritten_question) or implicit_product_pricing(category_query)
+        price_category = inferred_category if is_pricing else "none"
         needs_web = is_pricing or parsed.get("needs_web") is True
         queries = clean_queries(parsed.get("queries", []))
         if needs_web and not queries:
             queries = [query, f"{query} authoritative source", f"{query} {market}"]
         if needs_web and is_pricing:
-            queries = pricing_queries(query, queries)
+            queries = pricing_queries(query, queries, price_category)
         queries = queries[:6]
         route = "web research" if needs_web else "model knowledge"
         event(job_id, "reasoning", "summary", f"Using {route}", rewritten_question, phase="Planning complete")
+        if is_pricing:
+            event(job_id, "reasoning", "summary", f"Pricing strategy: {price_category}",
+                  pricing_strategy_context(price_category))
         if subquestions:
             event(job_id, "reasoning", "summary", f"Identified {len(subquestions)} supporting questions", "; ".join(subquestions))
 
@@ -126,7 +132,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         for round_number in range(1, max_rounds + 1):
             event(job_id, "phase", "running", f"Research round {round_number}", phase=f"Searching — round {round_number}")
             candidates = []
-            if round_number == 1 and is_pricing:
+            if round_number == 1 and price_category in {"hv-equipment", "industrial", "service-project"}:
                 indexed = search_procurement(rewritten_question, limit=max(10, settings["results_per_query"] * 2))
                 event(job_id, "index", "returned", "Searched local procurement index",
                       f"{len(indexed)} structured notices returned")
@@ -162,8 +168,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                                        "snippet": str(row.get("body") or ""), "query": search_query,
                                        "published_at": str(row.get("date") or row.get("published") or ""),
                                        "search_backend": str(row.get("search_backend") or "")})
-            candidates = subject_relevant_candidates(candidates, rewritten_question)
-            ranked = rank_candidates(candidates, rewritten_question, requirements, subquestions)
+            candidates = subject_relevant_candidates(candidates, rewritten_question, price_category)
+            ranked = rank_candidates(candidates, rewritten_question, requirements, subquestions, price_category)
             ranked = embedding_rerank(job_id, settings, ranked,
                                       research_text(rewritten_question, requirements, subquestions))
             remaining_rounds = max_rounds - round_number + 1
@@ -198,7 +204,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                     verdict, reason = "useful", "Exact requested product/specification with a visible commercial price"
                     claims = best_passages(focused_text, f"{rewritten_question} price", limit=3, max_chars=1_500)
                 else:
-                    verdict, reason, claims = analyse_source(prompts, settings, model, source_query, title, url, focused_text)
+                    review_query = f"{source_query}\nPricing strategy: {pricing_strategy_context(price_category)}"
+                    verdict, reason, claims = analyse_source(prompts, settings, model, review_query, title, url, focused_text)
                 if verdict != "useful":
                     if verdict == "unusable":
                         reason = f"Not retained: {reason}"
@@ -283,6 +290,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                    for x in evidence]
         update(job_id, status="completed", phase="Complete", message=answer, sources=sources,
                steps=[f"Ollama model: {model}", f"Ran {len(attempted_queries)} targeted searches",
+                      f"Pricing strategy: {price_category}",
                       f"Retained {len(evidence)} ranked sources", "Evidence coverage and citations reviewed"], completed_at=now())
         event(job_id, "phase", "returned", "Research answer completed", phase="Complete")
     except Exception as exc:
@@ -528,7 +536,7 @@ def research_text(question, requirements, subquestions):
     return " ".join([question, *requirements, *subquestions])
 
 
-def rank_candidates(candidates, question, requirements=None, subquestions=None):
+def rank_candidates(candidates, question, requirements=None, subquestions=None, category="general-product"):
     """Rank search results for relevance, authority, and source diversity."""
     target = terms(research_text(question, requirements or [], subquestions or []))
     generic = {"price", "prices", "pricing", "cost", "costs", "current", "market", "buy", "deal",
@@ -542,8 +550,8 @@ def rank_candidates(candidates, question, requirements=None, subquestions=None):
         host = hostname(candidate.get("url", ""))
         overlap = len(target & title_terms) * 3 + len(target & snippet_terms) + len(query_terms & (title_terms | snippet_terms))
         denominator = max(1, len(target))
-        authority = 1.25 if (host.endswith(".gov") or host.endswith(".gov.uk") or host.endswith(".edu") or
-                             host.endswith(".ac.uk")) else 0.0
+        authority = 1.25 if category != "consumer-retail" and (host.endswith(".gov") or
+                             host.endswith(".gov.uk") or host.endswith(".edu") or host.endswith(".ac.uk")) else 0.0
         path = urlparse(candidate.get("url", "")).path.lower()
         primary_hint = 0.6 if any(token in path for token in ("/docs", "/documentation", "/research", "/report", "/news")) else 0.0
         commercial_text = f"{candidate.get('title', '')} {candidate.get('snippet', '')}".lower()
@@ -592,20 +600,69 @@ def pricing_intent(original_query, rewritten_question):
     return pricing_request(original_query) or pricing_request(rewritten_question)
 
 
-def pricing_queries(query, planned):
+CONSUMER_TERMS = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
+                  "television", "camera", "headphone", "headphones", "keyboard", "mouse", "router", "watch"}
+HV_TERMS = {"switchgear", "transformer", "disconnector", "isolator", "substation", "circuit-breaker",
+            "breaker", "busbar", "bushing", "arrester", "earthing", "relay", "protection", "gis", "ais"}
+SERVICE_TERMS = {"service", "services", "installation", "install", "maintenance", "repair", "consultancy",
+                 "consulting", "commissioning", "construction", "labour", "labor", "hire", "rental"}
+INDUSTRIAL_TERMS = {"generator", "motor", "pump", "compressor", "chiller", "boiler", "inverter", "drive",
+                    "valve", "cable", "machine", "machinery", "crane", "ups", "battery", "panel"}
+
+
+def pricing_category(query):
+    """Classify a price request without relying on an LLM rewrite."""
+    query_terms = terms(query)
+    if query_terms & HV_TERMS or re.search(r"\b\d+(?:\.\d+)?\s*k\s*v\b", str(query), re.I):
+        return "hv-equipment"
+    if query_terms & SERVICE_TERMS:
+        return "service-project"
+    if query_terms & CONSUMER_TERMS:
+        return "consumer-retail"
+    if query_terms & INDUSTRIAL_TERMS:
+        return "industrial"
+    return "general-product"
+
+
+def implicit_product_pricing(query):
+    """In this pricing app, a bare product description means 'find its price'."""
+    query_terms = terms(query)
+    informational = {"explain", "works", "working", "manual", "instructions", "troubleshoot", "repairing"}
+    return pricing_category(query) != "general-product" and not query_terms & informational
+
+
+def pricing_strategy_context(category):
+    return {
+        "hv-equipment": "Prioritise utility procurement, awards, frameworks and cost schedules; compare voltage class, ratings, configuration and supply-versus-installed scope.",
+        "industrial": "Prioritise manufacturer/distributor catalogues, quotations and procurement benchmarks; compare capacity, rating, configuration and scope.",
+        "consumer-retail": "Prioritise exact model/specification retailer listings and visible current prices; reject generic category pages and different models.",
+        "service-project": "Prioritise schedules of rates, labour/day rates, tender awards and installed project costs; compare geography, quantities and inclusions.",
+        "general-product": "Prioritise exact-description supplier, distributor and catalogue prices before broader comparable-product evidence.",
+    }.get(category, "Use evidence appropriate to the requested product and scope.")
+
+
+def pricing_queries(query, planned, category=None):
     """Preserve the requested item/specification in deterministic commercial searches."""
     base = " ".join(str(query).split())
     equipment = re.sub(r"\bpricing\s+for\b", "", base, flags=re.I).strip()
     equipment = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment, flags=re.I)
-    industrial_terms = {"kv", "switchgear", "transformer", "disconnector", "substation", "tender", "procurement",
-                        "cable", "generator", "motor", "pump", "compressor", "gis", "ais"}
+    category = category or pricing_category(query)
     normalized_equipment = re.sub(r"(?<=\d)\s+(?=(?:gb|tb|kv|ka|a)\b)", "", equipment, flags=re.I)
-    if terms(equipment) & industrial_terms or re.search(r"\b\d+\s*k[va]\b", equipment, re.I):
+    if category == "hv-equipment":
         additions = [f"{equipment} tender award procurement price", f"{equipment} schedule of rates cost data pdf",
                      f"{equipment} framework contract award lot value"]
-    else:
+    elif category == "industrial":
+        additions = [f"{equipment} manufacturer distributor price", f"{equipment} catalogue price pdf",
+                     f"{equipment} quotation tender award"]
+    elif category == "service-project":
+        additions = [f"{equipment} schedule of rates", f"{equipment} labour day rate price",
+                     f"{equipment} tender contract award value"]
+    elif category == "consumer-retail":
         additions = [f"{normalized_equipment} price", f"{normalized_equipment} buy online",
                      f"{normalized_equipment} retailer"]
+    else:
+        additions = [f"{normalized_equipment} price", f"{normalized_equipment} supplier distributor",
+                     f"{normalized_equipment} catalogue price"]
     voltage = re.search(r"\b132\s*k\s*v\b", equipment, re.I)
     if voltage:
         additions[0] = f"132 kV 145 kV disconnector earth switch tender award procurement price"
@@ -615,7 +672,7 @@ def pricing_queries(query, planned):
     return clean_queries(additions + kept)
 
 
-def subject_relevant_candidates(candidates, question):
+def subject_relevant_candidates(candidates, question, category=None):
     """Drop results that match only generic words such as global, market, or price."""
     ignored = {"price", "prices", "pricing", "cost", "costs", "current", "global", "market", "value", "values",
                "specification", "specifications", "equipment", "including", "with", "for", "and", "the"}
@@ -624,12 +681,10 @@ def subject_relevant_candidates(candidates, question):
             term = term[:-3]
         return term.rstrip("s")
 
-    consumer_nouns = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
-                      "television", "camera", "headphone", "headphones"}
     query_terms = terms(question)
-    consumer_request = bool(query_terms & consumer_nouns)
+    consumer_request = (category or pricing_category(question)) == "consumer-retail"
     anchors = {stem(term) for term in query_terms if len(term) >= 3 and term not in ignored and
-               (consumer_request and term not in consumer_nouns or
+               (consumer_request and term not in CONSUMER_TERMS or
                 not consumer_request and not any(character.isdigit() for character in term))}
     if not anchors:
         return candidates
@@ -644,17 +699,15 @@ def subject_relevant_candidates(candidates, question):
         required = len(anchors) if consumer_request else 1
         if len(matching_anchors) >= required:
             matched.append(candidate)
-    return matched or candidates
+    return matched if consumer_request else (matched or candidates)
 
 
 def exact_priced_product_candidate(candidate, question, content=""):
     """Retain exact retail evidence deterministically when both identity and price are visible."""
-    consumer_nouns = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
-                      "television", "camera", "headphone", "headphones"}
     query_terms = terms(question)
-    if not query_terms & consumer_nouns:
+    if not query_terms & CONSUMER_TERMS:
         return False
-    anchors = {term for term in query_terms if term not in consumer_nouns and term not in
+    anchors = {term for term in query_terms if term not in CONSUMER_TERMS and term not in
                {"price", "prices", "pricing", "cost", "current", "new", "buy"}}
     corpus = f"{candidate.get('title', '')} {candidate.get('snippet', '')} {content}"
     corpus_terms = terms(corpus)
