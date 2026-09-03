@@ -56,6 +56,7 @@ INTERNET_PRICING_BROWSER_FALLBACK=1       # set 0 to disable
 INTERNET_PRICING_BROWSER_MAX_PAGES=3      # clamped to 0..5
 INTERNET_PRICING_BROWSER_TIMEOUT_MS=15000 # clamped to 5000..30000
 INTERNET_PRICING_BROWSER_SETTLE_MS=1500   # post-load settle, clamped to 0..5000
+PLAYWRIGHT_BROWSERS_PATH=/home/zageabb/ollama-chat/playwright-browsers
 ```
 
 ## Run
@@ -74,7 +75,7 @@ On a new Ubuntu host, Playwright's system libraries may also need to be installe
 sudo .venv/bin/python -m playwright install-deps chromium
 ```
 
-After Python dependencies are installed on an existing host, `bash deploy/install-browser.sh` installs the compatible Chromium build into Playwright's browser cache.
+After Python dependencies are installed on an existing host, `bash deploy/install-browser.sh` installs the compatible Chromium build. The script supports both a project-local `.venv` and this deployment's shared `../venv`; `INTERNET_PRICING_PYTHON` can explicitly override the interpreter. Set the same `PLAYWRIGHT_BROWSERS_PATH` in the application service environment.
 
 Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The active port defaults to `5053`; override it with the `PORT` environment variable if needed.
 
