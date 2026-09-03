@@ -31,14 +31,51 @@ Category strategies are deliberately separate:
 
 A request such as `Find a price for 400 kV GIS switchgear, 2 incomers 2000 A and 6 feeders 630 A` should therefore trigger searches for current 400/420 kV GIS quotations or procurement benchmarks, comparable bay configurations and OEM technical context, then return a structured budget estimate with source-backed reasoning.
 
+## Web page reading
+
+Internet Pricing keeps the lightweight reader as the default path. Public HTML and PDFs are fetched with bounded HTTP requests first, then structured commerce data, product metadata, tables and visible text are extracted.
+
+For JavaScript-heavy commercial pages, an optional Playwright fallback uses headless Chromium only when a shortlisted retail, industrial or general-product page still has no visible price after the lightweight fetch. The fallback:
+
+- reuses one Chromium process and opens a fresh isolated browser context for each page;
+- executes JavaScript and extracts the rendered DOM through the same structured/visible-text parser;
+- renders at most three candidate pages per fetch batch by default;
+- uses a 15 second navigation timeout by default;
+- blocks images, video/media, fonts and common advertising/analytics hosts;
+- validates browser requests as public URLs to retain the application's SSRF protections;
+- caches successful rendered content through the existing retrieval cache;
+- does not pass `--no-sandbox`, so Chromium retains its normal sandbox when the service runs as an unprivileged account;
+- does not attempt to bypass logins, CAPTCHAs, bot challenges or other access controls.
+
+HV and service/project procurement pages continue through the lighter HTML/PDF path because browser rendering usually adds cost without improving those sources.
+
+The browser fallback can be tuned with environment variables:
+
+```bash
+INTERNET_PRICING_BROWSER_FALLBACK=1       # set 0 to disable
+INTERNET_PRICING_BROWSER_MAX_PAGES=3      # clamped to 0..5
+INTERNET_PRICING_BROWSER_TIMEOUT_MS=15000 # clamped to 5000..30000
+INTERNET_PRICING_BROWSER_SETTLE_MS=1500   # post-load settle, clamped to 0..5000
+PLAYWRIGHT_BROWSERS_PATH=/home/zageabb/ollama-chat/playwright-browsers
+```
+
 ## Run
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium
 cp settings.example.json settings.json
 .venv/bin/python app.py
 ```
+
+On a new Ubuntu host, Playwright's system libraries may also need to be installed once. Run this with administrator privileges during server provisioning, not from the web application service account:
+
+```bash
+sudo .venv/bin/python -m playwright install-deps chromium
+```
+
+After Python dependencies are installed on an existing host, `bash deploy/install-browser.sh` installs the compatible Chromium build. The script supports both a project-local `.venv` and this deployment's shared `../venv`; `INTERNET_PRICING_PYTHON` can explicitly override the interpreter. Set the same `PLAYWRIGHT_BROWSERS_PATH` in the application service environment.
 
 Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The active port defaults to `5053`; override it with the `PORT` environment variable if needed.
 
