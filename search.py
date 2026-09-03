@@ -194,7 +194,11 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                 passages = best_passages(text, research_text(rewritten_question, requirements, subquestions),
                                          limit=4, max_chars=6_000)
                 focused_text = "\n\n".join(passages) or text[:12_000]
-                verdict, reason, claims = analyse_source(prompts, settings, model, source_query, title, url, focused_text)
+                if exact_priced_product_candidate(candidate, rewritten_question, focused_text):
+                    verdict, reason = "useful", "Exact requested product/specification with a visible commercial price"
+                    claims = best_passages(focused_text, f"{rewritten_question} price", limit=3, max_chars=1_500)
+                else:
+                    verdict, reason, claims = analyse_source(prompts, settings, model, source_query, title, url, focused_text)
                 if verdict != "useful":
                     if verdict == "unusable":
                         reason = f"Not retained: {reason}"
@@ -548,7 +552,7 @@ def rank_candidates(candidates, question, requirements=None, subquestions=None):
                                               ("award value", "lot value", "estimated value", "unit rate"))) else 0.0
         structured_hint = 1.0 if str(candidate.get("search_backend", "")).startswith("procurement-index:") else 0.0
         matched_anchors = anchors & (title_terms | snippet_terms)
-        exact_hint = 2.5 if anchors and len(matched_anchors) / len(anchors) >= 0.75 else 0.0
+        exact_hint = 8.0 if anchors and len(matched_anchors) / len(anchors) >= 0.75 else 0.0
         freshness = freshness_score(candidate.get("published_at", "")) if freshness_sensitive(question) else 0.0
         candidate = dict(candidate)
         candidate["score"] = round(overlap / denominator + authority + primary_hint + commercial_hint +
@@ -620,8 +624,13 @@ def subject_relevant_candidates(candidates, question):
             term = term[:-3]
         return term.rstrip("s")
 
-    anchors = {stem(term) for term in terms(question)
-               if len(term) >= 4 and term not in ignored and not any(character.isdigit() for character in term)}
+    consumer_nouns = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
+                      "television", "camera", "headphone", "headphones"}
+    query_terms = terms(question)
+    consumer_request = bool(query_terms & consumer_nouns)
+    anchors = {stem(term) for term in query_terms if len(term) >= 3 and term not in ignored and
+               (consumer_request and term not in consumer_nouns or
+                not consumer_request and not any(character.isdigit() for character in term))}
     if not anchors:
         return candidates
     matched = []
@@ -631,9 +640,30 @@ def subject_relevant_candidates(candidates, question):
             continue
         haystack = terms(candidate_text)
         normalized = haystack | {stem(term) for term in haystack if len(term) >= 4}
-        if anchors & normalized:
+        matching_anchors = anchors & normalized
+        required = len(anchors) if consumer_request else 1
+        if len(matching_anchors) >= required:
             matched.append(candidate)
     return matched or candidates
+
+
+def exact_priced_product_candidate(candidate, question, content=""):
+    """Retain exact retail evidence deterministically when both identity and price are visible."""
+    consumer_nouns = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
+                      "television", "camera", "headphone", "headphones"}
+    query_terms = terms(question)
+    if not query_terms & consumer_nouns:
+        return False
+    anchors = {term for term in query_terms if term not in consumer_nouns and term not in
+               {"price", "prices", "pricing", "cost", "current", "new", "buy"}}
+    corpus = f"{candidate.get('title', '')} {candidate.get('snippet', '')} {content}"
+    corpus_terms = terms(corpus)
+    required = max(1, math.ceil(len(anchors) * 0.75))
+    identity_match = len(anchors & corpus_terms) >= required
+    visible_price = bool(re.search(
+        r"(?:GBP|USD|EUR|CAD|AUD|INR|BDT|NPR|NGN|£|€|\$|₹|৳|Rs\.?|Tk\.?)\s*[\d,.]+|"
+        r"[\d,.]+\s*(?:GBP|USD|EUR|CAD|AUD|INR|BDT|NPR|NGN)", corpus, re.I))
+    return identity_match and visible_price
 
 
 def has_commercial_price(evidence):
