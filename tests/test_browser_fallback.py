@@ -35,6 +35,18 @@ class BrowserFallbackTest(unittest.TestCase):
         self.assertFalse(should_render_candidate(candidate, page))
 
     @patch("browser_fetch.search.public_url", return_value=True)
+    def test_renders_when_snippet_price_is_for_different_pack(self, _public_url):
+        candidate = {
+            "title": "Pepsi Max Cola 3L",
+            "url": "https://shop.example/pepsi-max",
+            "snippet": "Pepsi Max 2 litre - £2.00",
+            "query": "Pepsi Max cola 3L price",
+            "rank": 1,
+        }
+        page = {"text": "Pepsi Max 3L product details", "content_type": "text/html"}
+        self.assertTrue(should_render_candidate(candidate, page))
+
+    @patch("browser_fetch.search.public_url", return_value=True)
     def test_skips_hv_procurement_pages(self, _public_url):
         candidate = {
             "title": "145 kV disconnector tender",

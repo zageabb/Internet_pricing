@@ -83,7 +83,11 @@ def should_render_candidate(candidate: dict, page: dict) -> bool:
     snippet = str(candidate.get("snippet") or "")
     page_text = str(page.get("text") or "")
     corpus = f"{title} {snippet} {page_text}"
-    if has_price_signal(corpus):
+    # Search snippets often contain prices for related packs. Only skip browser
+    # rendering when the visible price matches the requested consumer product.
+    if ((category == "consumer-retail" and
+         search.exact_priced_product_candidate(candidate, query, page_text)) or
+            (category != "consumer-retail" and has_price_signal(corpus))):
         return False
 
     if category == "consumer-retail":

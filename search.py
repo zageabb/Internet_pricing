@@ -128,7 +128,9 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         seen = set()
         attempted_queries = []
         current_queries = queries
-        max_rounds = 1 if is_pricing else settings["max_search_rounds"]
+        # Pricing quality depends on comparable evidence, so retain the normal
+        # gap-analysis rounds instead of stopping every pricing request at one.
+        max_rounds = settings["max_search_rounds"]
         for round_number in range(1, max_rounds + 1):
             event(job_id, "phase", "running", f"Research round {round_number}", phase=f"Searching — round {round_number}")
             candidates = []
@@ -221,9 +223,9 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                                  "content_type": page.get("content_type", "")})
                 retained_this_round += 1
                 event(job_id, "site", "returned", title, f"Source {source_id} retained · {reason}", url)
-            if is_pricing and has_commercial_price(evidence):
+            if is_pricing and has_sufficient_commercial_benchmark(evidence, category_query, price_category):
                 event(job_id, "reasoning", "returned", "Commercial benchmark found",
-                      "Proceeding to the estimate without another search round")
+                      "Comparable price evidence found; proceeding to the estimate")
                 break
             if round_number == max_rounds or len(evidence) >= settings["max_pages_to_read"]:
                 break
@@ -257,7 +259,7 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                    steps=[f"Ollama model: {model}", "Route: knowledge fallback after web failure", f"Clarified request: {rewritten_question}", "Final answer reviewed"], completed_at=now())
             event(job_id, "phase", "returned", "Fallback answer completed", phase="Complete")
             return
-        commercial_price_found = has_commercial_price(evidence)
+        commercial_price_found = has_sufficient_commercial_benchmark(evidence, category_query, price_category)
         if is_pricing:
             fx = currency_conversion_evidence(evidence)
             if fx:
@@ -775,7 +777,8 @@ def pricing_intent(original_query, rewritten_question):
 CONSUMER_TERMS = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
                   "television", "camera", "headphone", "headphones", "keyboard", "mouse", "router", "watch",
                   "bottle", "bottles", "can", "cans", "pack", "drink", "drinks", "beverage", "beverages",
-                  "cola", "soda", "grocery", "groceries", "food", "snack", "snacks"}
+                  "cola", "soda", "grocery", "groceries", "food", "snack", "snacks", "litre", "litres",
+                  "liter", "liters", "ml"}
 HV_TERMS = {"switchgear", "transformer", "disconnector", "isolator", "substation", "circuit-breaker",
             "breaker", "busbar", "bushing", "arrester", "earthing", "relay", "protection", "gis", "ais"}
 SERVICE_TERMS = {"service", "services", "installation", "install", "maintenance", "repair", "consultancy",
@@ -833,8 +836,8 @@ def pricing_queries(query, planned, category=None):
         additions = [f"{equipment} schedule of rates", f"{equipment} labour day rate price",
                      f"{equipment} tender contract award value"]
     elif category == "consumer-retail":
-        additions = [f"{normalized_equipment} price", f"{normalized_equipment} buy online",
-                     f"{normalized_equipment} retailer"]
+        additions = [f"{normalized_equipment} price", f"{normalized_equipment} supermarket price",
+                     f'"{normalized_equipment}" retailer price']
     else:
         additions = [f"{normalized_equipment} price", f"{normalized_equipment} supplier distributor",
                      f"{normalized_equipment} catalogue price"]
@@ -883,22 +886,53 @@ def exact_priced_product_candidate(candidate, question, content=""):
     if not query_terms & CONSUMER_TERMS:
         return False
     anchors = {term for term in query_terms if term not in CONSUMER_TERMS and term not in
-               {"price", "prices", "pricing", "cost", "current", "new", "buy"}}
-    corpus = f"{candidate.get('title', '')} {candidate.get('snippet', '')} {content}"
+               {"price", "prices", "pricing", "cost", "current", "new", "buy", "online", "retail",
+                "retailer", "united", "states", "kingdom", "europe", "european", "market", "markets"}}
+    fields = [str(candidate.get("title", "")), str(candidate.get("snippet", "")), str(content or "")]
+    corpus = "\n".join(fields)
     corpus_terms = terms(corpus)
     required = max(1, math.ceil(len(anchors) * 0.75))
     identity_match = len(anchors & corpus_terms) >= required
-    visible_price = bool(re.search(
+    requested_packs = pack_specs(question)
+    price_re = re.compile(
         r"(?:GBP|USD|EUR|CAD|AUD|INR|BDT|NPR|NGN|£|€|\$|₹|৳|Rs\.?|Tk\.?)\s*[\d,.]+|"
-        r"[\d,.]+\s*(?:GBP|USD|EUR|CAD|AUD|INR|BDT|NPR|NGN)", corpus, re.I))
-    return identity_match and visible_price
+        r"[\d,.]+\s*(?:GBP|USD|EUR|CAD|AUD|INR|BDT|NPR|NGN)", re.I)
+    if requested_packs:
+        # Keep size and price attached to the same result field/passage. This
+        # prevents a 3 L title plus an unrelated 2 L snippet price from matching.
+        visible_matching_price = any(requested_packs & pack_specs(field) and price_re.search(field)
+                                     for field in fields)
+    else:
+        visible_matching_price = bool(price_re.search(corpus))
+    return identity_match and visible_matching_price
+
+
+def pack_specs(value):
+    """Return normalized retail pack sizes so unlike formats cannot satisfy a price request."""
+    specs = set()
+    for amount, unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(ml|l|litres?|liters?)\b", str(value), re.I):
+        normalized_unit = "ml" if unit.lower() == "ml" else "l"
+        specs.add(f"{amount.replace(',', '.')}{normalized_unit}")
+    return specs
 
 
 def has_commercial_price(evidence):
-    corpus = evidence_ledger(evidence)
+    corpus = "\n".join(" ".join([
+        str(item.get("title", "")), str(item.get("text", "")),
+        " ".join(map(str, item.get("claims", []))), " ".join(map(str, item.get("passages", []))),
+    ]) for item in evidence)
     currency = r"(?:USD|EUR|GBP|JPY|INR|CNY|AUD|CAD|CHF|£|€|\$|₹|¥)"
     amount = r"(?:\d[\d,.]*\s*(?:million|billion|thousand|[kmb])?)"
     return bool(re.search(rf"(?:{currency}\s*{amount}|{amount}\s*{currency})", corpus, re.I))
+
+
+def has_sufficient_commercial_benchmark(evidence, question, category):
+    """Only let comparable consumer evidence end research or drive a verified headline price."""
+    if not has_commercial_price(evidence):
+        return False
+    if category != "consumer-retail":
+        return True
+    return any(exact_priced_product_candidate(item, question, item.get("text", "")) for item in evidence)
 
 
 def currency_conversion_evidence(evidence):
@@ -1090,7 +1124,7 @@ def review_answer(job_id, prompts, settings, model, query, rewritten_question, r
         if not final_answer:
             event(job_id, "reasoning", "failed", "Final review returned no answer", "Using the original draft")
             return answer
-        status = "passed" if reviewed.get("answered") is True else "revised"
+        status = "passed" if reviewed.get("answered") is True and not issues else "revised"
         event(job_id, "reasoning", "returned", f"Final answer review {status}", detail)
         return final_answer
     except Exception as exc:

@@ -1,9 +1,38 @@
 import unittest
 
+from search import (exact_priced_product_candidate, has_sufficient_commercial_benchmark,
+                    pack_specs, pricing_category, pricing_queries)
 from settings_store import DEFAULTS, PROMPTS
 
 
 class PricingPromptTest(unittest.TestCase):
+    def test_litre_product_is_consumer_retail(self):
+        self.assertEqual(pricing_category("3 litre pepsi max price"), "consumer-retail")
+
+    def test_consumer_queries_prioritise_retail(self):
+        queries = pricing_queries("3 litre pepsi max price", [], "consumer-retail")
+        self.assertTrue(any("supermarket" in query for query in queries))
+        self.assertFalse(any("supplier distributor" in query for query in queries))
+
+    def test_pack_specs_normalize_litre_spelling(self):
+        self.assertEqual(pack_specs("3 litre and 1.5 liters"), {"3l", "1.5l"})
+
+    def test_different_pack_price_is_not_exact(self):
+        candidate = {"title": "Pepsi Max Tropical cans", "snippet": "24 x 0.33 litre, EUR 17.50"}
+        self.assertFalse(exact_priced_product_candidate(candidate, "3 litre Pepsi Max price", ""))
+
+    def test_exact_pack_price_is_sufficient_consumer_benchmark(self):
+        evidence = [{"title": "Pepsi Max 3L bottle", "text": "Pepsi Max 3 litre bottle £3.00",
+                     "snippet": "", "query": "Pepsi Max 3L price"}]
+        self.assertTrue(has_sufficient_commercial_benchmark(
+            evidence, "3 litre Pepsi Max price", "consumer-retail"))
+
+    def test_different_pack_price_does_not_end_consumer_research(self):
+        evidence = [{"title": "Pepsi Max Tropical cans", "text": "24 x 0.33 litre case EUR 17.50",
+                     "snippet": "", "query": "Pepsi Max price"}]
+        self.assertFalse(has_sufficient_commercial_benchmark(
+            evidence, "3 litre Pepsi Max price", "consumer-retail"))
+
     def test_pricing_defaults_request_deeper_research(self):
         self.assertGreaterEqual(DEFAULTS["max_search_rounds"], 3)
         self.assertGreaterEqual(DEFAULTS["max_pages_to_read"], 12)
