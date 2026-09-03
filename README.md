@@ -15,6 +15,7 @@ For pricing requests the assistant is instructed to:
 - Separate equipment-only supply from erection, testing, commissioning, civils, protection/control, cabling and complete installed-package costs where relevant.
 - Compare like-for-like scope before using a benchmark and explain important differences.
 - Give low/base/high or reasonable tender ranges when the evidence supports estimation rather than a single false-precision figure.
+- If searches return no readable evidence, fall back to model knowledge instead of returning nothing. Any pricing from that fallback is explicitly labelled indicative, not web-verified, and low confidence.
 - Clearly label estimates and assumptions and keep externally verifiable price claims tied to citations.
 - Preserve the General Search answer presentation: concise Markdown, tables where useful, inline source references and a source list.
 

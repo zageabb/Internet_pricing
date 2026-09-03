@@ -28,6 +28,18 @@ class PricingPromptTest(unittest.TestCase):
         self.assertIn("approximate", answer)
         self.assertIn("not web-verified", answer)
 
+    def test_model_knowledge_fallback_is_a_persistent_prompt_contract(self):
+        direct = PROMPTS.defaults["direct_answer"].lower()
+        answer = PROMPTS.defaults["answer"].lower()
+        review = PROMPTS.defaults["citation_review"].lower()
+
+        self.assertIn("model-knowledge figure", direct)
+        self.assertIn("indicative model-knowledge budget range", answer)
+        self.assertIn("uncited model-knowledge budget range is permitted", review)
+        self.assertIn("not web-verified", direct)
+        self.assertIn("not web-verified", answer)
+        self.assertIn("not web-verified", review)
+
 
 if __name__ == "__main__":
     unittest.main()
