@@ -71,6 +71,8 @@ def should_render_candidate(candidate: dict, page: dict) -> bool:
     content_type = str(page.get("content_type") or "").lower()
     if "pdf" in content_type or "+rendered" in content_type:
         return False
+    if str(page.get("error") or "").startswith("Blocked non-public"):
+        return False
 
     query = str(candidate.get("query") or "")
     category = search.pricing_category(query)
@@ -125,14 +127,14 @@ class BrowserRenderer:
 
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = playwright.chromium.launch(headless=True, chromium_sandbox=True)
                 while True:
                     url, timeout_ms, future = self._queue.get()
                     if future.cancelled():
                         continue
                     try:
                         if not browser.is_connected():
-                            browser = playwright.chromium.launch(headless=True)
+                            browser = playwright.chromium.launch(headless=True, chromium_sandbox=True)
                         result = self._render_one(browser, url, timeout_ms, PlaywrightTimeoutError)
                     except Exception as exc:
                         result = {"text": "", "error": f"Headless Chromium failed: {search.request_error(exc)}"}
@@ -153,9 +155,10 @@ class BrowserRenderer:
             return {"text": "", "error": "Blocked non-public or invalid URL"}
 
         context = browser.new_context(
-            user_agent=search.HEADERS["User-Agent"],
             locale="en-GB",
             java_script_enabled=True,
+            service_workers="block",
+            accept_downloads=False,
         )
         page = context.new_page()
 
@@ -179,7 +182,7 @@ class BrowserRenderer:
             route.continue_()
 
         try:
-            page.route("**/*", route_request)
+            context.route("**/*", route_request)
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             try:
                 page.wait_for_function(
