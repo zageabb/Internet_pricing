@@ -8,7 +8,7 @@ from pathlib import Path
 from search import (best_passages, canonical_url, clean_queries, configured_search_backends,
                     cosine_similarity, evidence_ledger,
                     currency_conversion_evidence, exact_priced_product_candidate, extract_html, fetch_page, freshness_score,
-                    has_commercial_price, implicit_product_pricing, market_context, pricing_category,
+                    has_commercial_price, implicit_product_pricing, market_context, merge_page_and_snippet, pricing_category,
                     pricing_intent, pricing_queries, pricing_request, pricing_strategy_context,
                     public_url, rank_candidates, search_web, subject_relevant_candidates)
 import settings_store
@@ -62,11 +62,13 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(implicit_product_pricing("Lenovo V15 16GB 512GB laptop"))
         self.assertTrue(implicit_product_pricing("BenQ 27 inch monitor"))
         self.assertTrue(implicit_product_pricing("132 kV disconnector with earth switch"))
+        self.assertTrue(implicit_product_pricing("3 litre bottle of Pepsi Max"))
         self.assertFalse(implicit_product_pricing("Explain how a laptop works"))
 
     def test_pricing_categories_cover_general_and_specialist_products(self):
         self.assertEqual(pricing_category("132 kV disconnector with earth switch"), "hv-equipment")
         self.assertEqual(pricing_category("Lenovo V15 laptop"), "consumer-retail")
+        self.assertEqual(pricing_category("3 litre bottle of Pepsi Max"), "consumer-retail")
         self.assertEqual(pricing_category("industrial compressor 250 kW"), "industrial")
         self.assertEqual(pricing_category("substation installation labour"), "hv-equipment")
         self.assertEqual(pricing_category("office cleaning service"), "service-project")
@@ -160,6 +162,21 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertFalse(exact_priced_product_candidate(
             {"title": "Lenovo V15 16GB 512GB SSD", "snippet": "Available now"},
             "pricing for Lenovo V15 16GB 512GB laptop", "Contact us for details"))
+
+    def test_grocery_search_summary_can_supply_dynamic_retail_price(self):
+        candidate = {
+            "title": "Pepsi Max No Sugar Cola Bottle (3 Litre) - Compare Prices",
+            "snippet": "Compare Pepsi Max 3 litre in Iceland. From £3.00. Prices updated daily.",
+        }
+
+        self.assertTrue(exact_priced_product_candidate(
+            candidate, "3 litre bottle of Pepsi Max", "Dynamic page content without a rendered price"))
+
+        merged, content_type = merge_page_and_snippet(
+            "Dynamic page content without a rendered price", candidate["snippet"], "text/html")
+        self.assertIn("From £3.00", merged)
+        self.assertIn("Dynamic page content", merged)
+        self.assertEqual(content_type, "text/html+search-summary")
 
     def test_commercial_price_detection(self):
         priced = [{"source_id": 1, "title": "Award", "url": "https://example.com", "query": "award",

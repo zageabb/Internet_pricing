@@ -193,7 +193,8 @@ def _run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
                           f"Page unavailable ({page['error']}); evaluating indexed search passage", url)
                     page = {"text": snippet, "url": url, "content_type": "text/search-snippet",
                             "published_at": candidate.get("published_at", "")}
-                text = page.get("text") or snippet
+                text, page["content_type"] = merge_page_and_snippet(
+                    page.get("text"), snippet, page.get("content_type", ""))
                 if len(text.strip()) < 40:
                     event(job_id, "site", "unreadable", title, "No readable evidence", url)
                     continue
@@ -536,6 +537,15 @@ def research_text(question, requirements, subquestions):
     return " ".join([question, *requirements, *subquestions])
 
 
+def merge_page_and_snippet(page_text, snippet, content_type=""):
+    """Keep price-rich search summaries when dynamic pages omit rendered values."""
+    page_text, snippet = str(page_text or "").strip(), str(snippet or "").strip()
+    if page_text and snippet:
+        text = f"Search result summary (obtained {date.today().isoformat()}):\n{snippet}\n\nPage content:\n{page_text}"
+        return text, f"{content_type or 'text/html'}+search-summary"
+    return page_text or snippet, content_type or ("text/search-snippet" if snippet else "")
+
+
 def rank_candidates(candidates, question, requirements=None, subquestions=None, category="general-product"):
     """Rank search results for relevance, authority, and source diversity."""
     target = terms(research_text(question, requirements or [], subquestions or []))
@@ -601,7 +611,9 @@ def pricing_intent(original_query, rewritten_question):
 
 
 CONSUMER_TERMS = {"laptop", "monitor", "computer", "desktop", "phone", "smartphone", "tablet", "printer",
-                  "television", "camera", "headphone", "headphones", "keyboard", "mouse", "router", "watch"}
+                  "television", "camera", "headphone", "headphones", "keyboard", "mouse", "router", "watch",
+                  "bottle", "bottles", "can", "cans", "pack", "drink", "drinks", "beverage", "beverages",
+                  "cola", "soda", "grocery", "groceries", "food", "snack", "snacks"}
 HV_TERMS = {"switchgear", "transformer", "disconnector", "isolator", "substation", "circuit-breaker",
             "breaker", "busbar", "bushing", "arrester", "earthing", "relay", "protection", "gis", "ais"}
 SERVICE_TERMS = {"service", "services", "installation", "install", "maintenance", "repair", "consultancy",
