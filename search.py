@@ -422,17 +422,179 @@ def extract_pdf(payload):
 
 def extract_html(payload):
     soup = BeautifulSoup(payload, "html.parser")
-    published_at = ""
+    structured_lines, structured_date = extract_structured_commerce(soup)
+    meta_lines = extract_product_meta(soup)
+    table_lines = extract_commercial_tables(soup)
+    published_at = structured_date
     for attributes in ({"property": "article:published_time"}, {"name": "date"},
                        {"name": "datePublished"}, {"itemprop": "datePublished"}):
         tag = soup.find("meta", attrs=attributes)
-        if tag and tag.get("content"):
+        if not published_at and tag and tag.get("content"):
             published_at = str(tag["content"])[:100]
             break
     for tag in soup(["script", "style", "nav", "footer", "noscript"]):
         tag.decompose()
     blocks = [" ".join(block.split()) for block in soup.get_text("\n", strip=True).splitlines()]
-    return "\n".join(block for block in blocks if len(block) >= 20)[:120_000], published_at
+    visible = [block for block in blocks if len(block) >= 20]
+    sections = []
+    if structured_lines:
+        sections.append("Structured commercial data (JSON-LD):\n" + "\n".join(structured_lines))
+    if meta_lines:
+        sections.append("Product metadata:\n" + "\n".join(meta_lines))
+    if table_lines:
+        sections.append("Commercial/specification tables:\n" + "\n".join(table_lines))
+    if visible:
+        sections.append("Visible page text:\n" + "\n".join(visible))
+    return "\n\n".join(sections)[:120_000], published_at
+
+
+def extract_structured_commerce(soup):
+    lines, dates, seen = [], [], set()
+    for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\+json", re.I)}):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for node in json_nodes(payload):
+            node_type = node.get("@type")
+            types = {str(value).lower() for value in (node_type if isinstance(node_type, list) else [node_type])}
+            if "product" in types:
+                fields = commerce_fields(node, ("name", "model", "sku", "mpn", "gtin", "gtin13", "category"))
+                brand = node.get("brand")
+                if isinstance(brand, dict):
+                    brand = brand.get("name")
+                if brand:
+                    fields.insert(1, f"brand={clean_scalar(brand)}")
+                append_unique(lines, seen, "Product: " + "; ".join(fields))
+            if types & {"offer", "aggregateoffer"}:
+                currency = clean_scalar(node.get("priceCurrency"))
+                fields = []
+                for price_name in ("price", "lowPrice", "highPrice"):
+                    if node.get(price_name) is not None:
+                        fields.append(f"{price_name}={currency + ' ' if currency else ''}{clean_scalar(node[price_name])}")
+                fields += commerce_fields(node, ("offerCount", "availability", "priceValidUntil", "itemCondition", "url"))
+                seller = node.get("seller")
+                if isinstance(seller, dict):
+                    seller = seller.get("name")
+                if seller:
+                    fields.append(f"seller={clean_scalar(seller)}")
+                append_unique(lines, seen, "Offer: " + "; ".join(fields))
+            published = node.get("datePublished") or node.get("dateModified")
+            if published:
+                dates.append(clean_scalar(published))
+    embedded_count = 0
+    for script in soup.find_all("script", attrs={"type": re.compile(r"application/json", re.I)}):
+        if embedded_count >= 20:
+            break
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw or len(raw) > 2_000_000:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for node in json_nodes(payload):
+            price = node.get("price") or node.get("salePrice") or node.get("currentPrice")
+            currency = node.get("priceCurrency") or node.get("currency") or node.get("currencyCode")
+            if isinstance(price, dict):
+                currency = currency or price.get("currency") or price.get("currencyCode")
+                price = price.get("value") or price.get("amount")
+            if price is None or not currency:
+                continue
+            identity = node.get("name") or node.get("title") or node.get("productName") or node.get("sku") or "product"
+            append_unique(lines, seen,
+                          f"Embedded offer: product={clean_scalar(identity)}; price={clean_scalar(currency).upper()} {clean_scalar(price)}")
+            embedded_count += 1
+            if embedded_count >= 20:
+                break
+    return [line for line in lines if not line.endswith(": ")], (dates[0][:100] if dates else "")
+
+
+def json_nodes(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from json_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from json_nodes(child)
+
+
+def clean_scalar(value):
+    return " ".join(str(value or "").split())[:500]
+
+
+def commerce_fields(node, names):
+    fields = []
+    for name in names:
+        value = node.get(name)
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            value = clean_scalar(value)
+            if name in {"availability", "itemCondition"}:
+                value = value.rsplit("/", 1)[-1]
+            fields.append(f"{name}={value}")
+    return fields
+
+
+def append_unique(lines, seen, value):
+    value = value.strip()
+    if value and value not in seen:
+        seen.add(value)
+        lines.append(value)
+
+
+def extract_product_meta(soup):
+    mappings = {
+        "og:title": "product title", "product:price:amount": "price", "product:price:currency": "currency",
+        "og:price:amount": "price", "og:price:currency": "currency", "product:availability": "availability",
+        "product:retailer_item_id": "retailer item id",
+    }
+    lines, seen, prices, currencies = [], set(), [], []
+    for tag in soup.find_all("meta"):
+        key = str(tag.get("property") or tag.get("name") or tag.get("itemprop") or "").strip()
+        content = clean_scalar(tag.get("content"))
+        label = mappings.get(key.lower())
+        if label and content:
+            append_unique(lines, seen, f"{label}: {content}")
+            if label == "price":
+                prices.append(content)
+            elif label == "currency":
+                currencies.append(content)
+    for itemprop, label in (("price", "price"), ("priceCurrency", "currency"),
+                            ("availability", "availability"), ("sku", "sku"), ("model", "model")):
+        for tag in soup.find_all(attrs={"itemprop": itemprop})[:3]:
+            value = clean_scalar(tag.get("content") or tag.get_text(" ", strip=True))
+            if value:
+                append_unique(lines, seen, f"{label}: {value}")
+                if label == "price":
+                    prices.append(value)
+                elif label == "currency":
+                    currencies.append(value)
+    if prices and currencies:
+        append_unique(lines, seen, f"Offer price: {currencies[0].upper()} {prices[0]}")
+    return lines
+
+
+def extract_commercial_tables(soup):
+    lines, total_rows = [], 0
+    keywords = re.compile(r"price|cost|currency|model|sku|rating|voltage|current|capacity|quantity|description|specification|unit|amount", re.I)
+    for table_number, table in enumerate(soup.find_all("table")[:20], 1):
+        rows = []
+        for row in table.find_all("tr")[:40]:
+            cells = [clean_scalar(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])[:12]]
+            if any(cells):
+                rows.append(" | ".join(cells))
+        if not rows or not keywords.search(" ".join(rows[:5])):
+            continue
+        lines.append(f"Table {table_number}:")
+        lines.extend(rows)
+        total_rows += len(rows)
+        if total_rows >= 100:
+            break
+    return lines
 
 
 def read_page(url):
