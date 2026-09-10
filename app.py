@@ -15,6 +15,7 @@ from classification_policy import (classification_report, get_category_order, ge
                                    install_classification_policy, reset_classification_rules,
                                    save_classification_rules)
 from document_extraction import clean_documents, document_context, extract_upload
+from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
 from pricing_runtime import install_hv_runtime
 from research_core_adapter import install_research_core_pricing
@@ -27,6 +28,7 @@ install_research_core_pricing()
 install_classification_policy(search_module)
 install_hv_runtime(search_module)
 install_category_profile_runtime(search_module)
+install_power_transformer_policy(search_module)
 install_pricing_recovery_policy(search_module)
 install_classification_coverage_guard(search_module)
 
