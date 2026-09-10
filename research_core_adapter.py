@@ -28,20 +28,17 @@ def _rating_tokens(value: str, unit: str) -> list[str]:
     return found
 
 
-def _nearest_current(value: str, words: tuple[str, ...]) -> str:
+def _context_current(value: str, words: tuple[str, ...]) -> str:
+    """Return a current explicitly attached to a named equipment role."""
     text = _compact(value)
-    matches = list(re.finditer(r"\b\d+(?:[.,]\d+)?\s*A\b", text, re.I))
-    if not matches:
-        return ""
-    best = None
-    lowered = text.lower()
-    positions = [position for word in words for position in [lowered.find(word)] if position >= 0]
-    for match in matches:
-        centre = match.start()
-        distance = min((abs(centre - position) for position in positions), default=10_000)
-        if best is None or distance < best[0]:
-            best = (distance, re.sub(r"\s+", "", match.group(0)))
-    return best[1] if best and best[0] < 80 else ""
+    for word in words:
+        after = re.search(rf"\b{re.escape(word)}s?\b[^,;:.]{{0,28}}?\b(\d+(?:[.,]\d+)?\s*A)\b", text, re.I)
+        if after:
+            return re.sub(r"\s+", "", after.group(1))
+        before = re.search(rf"\b(\d+(?:[.,]\d+)?\s*A)\b\s+(?:rated\s+)?{re.escape(word)}s?\b", text, re.I)
+        if before:
+            return re.sub(r"\s+", "", before.group(1))
+    return ""
 
 
 def _item_corpus(item: dict) -> str:
@@ -90,7 +87,7 @@ def _hv_commercial_benchmark(browser_fetch, item: dict, question: str) -> bool:
     normalized = re.sub(r"\s+", "", lower)
     target_ratings = [*_rating_tokens(question, "kV"), *_rating_tokens(question, "kA"), *_rating_tokens(question, "A")]
     rating_hits = sum(1 for token in target_ratings if token.lower() in normalized)
-    subject_hit = any(token in lower for token in ("switchgear", "switchboard", "vcb", "panel", "ais", "gis"))
+    subject_hit = any(token in lower for token in ("switchgear", "switchboard", "vcb", "panel", "ais", "gis", "disconnector", "isolator"))
 
     line_level_hints = (
         "unit price", "unit rate", "per panel", "each panel", "line item", "boq", "bill of quantities",
@@ -112,8 +109,11 @@ def _hv_commercial_benchmark(browser_fetch, item: dict, question: str) -> bool:
 
 
 def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
-    """Create complementary HV searches instead of requiring every rating in every query."""
+    """Create one exact HV search plus complementary evidence-layer searches."""
     base = _compact(query)
+    equipment_text = re.sub(r"^\s*(?:find\s+)?(?:current\s+)?(?:pricing|price|cost)\s+(?:for\s+)?", "", base, flags=re.I)
+    equipment_text = re.sub(r"\bwith\s+earthing\b", "with earth switch", equipment_text, flags=re.I).strip(" ,;:-")
+
     voltages = _rating_tokens(base, "kV")
     faults = _rating_tokens(base, "kA")
     currents = _rating_tokens(base, "A")
@@ -122,19 +122,25 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
 
     lower = base.lower()
     insulation = "GIS" if re.search(r"\bgis\b", lower) else "AIS" if re.search(r"\bais\b", lower) else ""
-    equipment = "switchgear" if "switchgear" in lower else "switchboard" if "switchboard" in lower else "switchgear"
-    breaker = "VCB panel" if "vcb" in lower or (voltage and float(re.sub(r"[^0-9.]", "", voltage) or 0) <= 36) else "panel"
+    if "disconnector" in lower or "disconnectors" in lower or "isolator" in lower or "isolators" in lower:
+        equipment = "disconnector"
+    elif "switchgear" in lower:
+        equipment = "switchgear"
+    elif "switchboard" in lower:
+        equipment = "switchboard"
+    else:
+        equipment = "switchgear"
+    breaker = "VCB panel" if "vcb" in lower or (voltage and float(re.sub(r"[^0-9.]", "", voltage) or 0) <= 36 and equipment in {"switchgear", "switchboard"}) else "panel"
 
-    incomer_current = _nearest_current(base, ("incomer", "incoming"))
-    feeder_current = _nearest_current(base, ("feeder", "outgoing"))
-    busbar_current = _nearest_current(base, ("busbar", "bus bar", "main bus"))
-    if not busbar_current and currents:
+    incomer_current = _context_current(base, ("incomer", "incoming"))
+    feeder_current = _context_current(base, ("feeder", "outgoing"))
+    busbar_current = _context_current(base, ("busbar", "bus bar", "main bus"))
+    if not busbar_current and currents and equipment in {"switchgear", "switchboard"}:
         try:
             busbar_current = max(currents, key=lambda token: float(re.sub(r"[^0-9.]", "", token)))
         except ValueError:
             busbar_current = currents[0]
 
-    identity = " ".join(part for part in (voltage, insulation, equipment, fault) if part)
     queries = []
 
     def add(value: str):
@@ -142,15 +148,26 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
         if value and value.lower() not in {item.lower() for item in queries}:
             queries.append(value[:300])
 
-    add(f'"{voltage}" "{fault}" {insulation} {equipment} tender award BOQ unit price' if voltage and fault
-        else f"{identity} tender award BOQ unit price")
+    # Preserve one complete exact-description search. The remaining searches are
+    # deliberately decomposed so a useful component benchmark is not excluded
+    # merely because it does not repeat the entire board configuration.
+    add(f"{equipment_text} tender award BOQ price")
+
+    # Retain the established 132 kV -> 145 kV equipment-class alias used for
+    # disconnectors/isolators, including the earth-switch terminology.
+    if re.search(r"\b132\s*k\s*v\b", base, re.I) and equipment == "disconnector":
+        add("132 kV 145 kV disconnector earth switch tender award procurement price")
+
     if incomer_current:
         add(f'"{voltage}" "{incomer_current}" "{fault}" incomer {equipment} import export customs price')
     if feeder_current:
         add(f'"{voltage}" "{feeder_current}" "{fault}" feeder {breaker} tender award unit price')
     if busbar_current:
         add(f'"{voltage}" "{busbar_current}" busbar {insulation} {equipment} technical data')
-    add(f"TenderKart {voltage} {fault} {breaker} award price")
+
+    # Source-focused discovery based on sources that repeatedly expose useful
+    # tender or transaction values for difficult HV equipment searches.
+    add(f"TenderKart {voltage} {fault} {breaker if equipment != 'disconnector' else equipment} award price")
     add(f"Volza {voltage} {incomer_current or busbar_current} {fault} {equipment} transaction")
 
     base_terms = {term for term in re.findall(r"[a-z0-9][a-z0-9_.-]+", lower)
