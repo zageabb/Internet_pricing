@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from research_core import __version__ as research_core_version, best_passages
 from research_core.ranking import cosine_similarity
 
 
 _ORIGINAL_PRICING_QUERIES = None
+_ORIGINAL_BROWSER_RENDER_RULE = None
 
 
 def _compact(value: str) -> str:
@@ -31,9 +33,10 @@ def _nearest_current(value: str, words: tuple[str, ...]) -> str:
         return ""
     best = None
     lowered = text.lower()
+    positions = [position for word in words for position in [lowered.find(word)] if position >= 0]
     for match in matches:
         centre = match.start()
-        distance = min((abs(centre - lowered.find(word)) for word in words if lowered.find(word) >= 0), default=10_000)
+        distance = min((abs(centre - position) for position in positions), default=10_000)
         if best is None or distance < best[0]:
             best = (distance, re.sub(r"\s+", "", match.group(0)))
     return best[1] if best and best[0] < 80 else ""
@@ -108,6 +111,52 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
     return queries
 
 
+def _install_hv_browser_rule(search) -> None:
+    """Permit bounded rendering for high-value HV evidence pages when light HTML is incomplete."""
+    global _ORIGINAL_BROWSER_RENDER_RULE
+    import browser_fetch
+
+    if getattr(browser_fetch.should_render_candidate, "_hv_pricing_rule", False):
+        return
+    if _ORIGINAL_BROWSER_RENDER_RULE is None:
+        _ORIGINAL_BROWSER_RENDER_RULE = browser_fetch.should_render_candidate
+
+    def should_render_candidate_with_hv(candidate: dict, page: dict) -> bool:
+        query = str(candidate.get("query") or "")
+        if search.pricing_category(query) != "hv-equipment":
+            return _ORIGINAL_BROWSER_RENDER_RULE(candidate, page)
+        if not browser_fetch.browser_fallback_enabled() or browser_fetch.browser_page_limit() <= 0:
+            return False
+        url = str(candidate.get("url") or "")
+        if not search.public_url(url):
+            return False
+        content_type = str(page.get("content_type") or "").lower()
+        if "pdf" in content_type or "+rendered" in content_type:
+            return False
+        if str(page.get("error") or "").startswith("Blocked non-public"):
+            return False
+
+        title = str(candidate.get("title") or "")
+        snippet = str(candidate.get("snippet") or "")
+        page_text = str(page.get("text") or "")
+        corpus = f"{title} {snippet} {page_text}"
+        if browser_fetch.has_price_signal(corpus):
+            return False
+
+        host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+        strong_hosts = {"tenderkart.in", "volza.com", "zauba.com"}
+        commercial_hints = (
+            "tender", "award", "boq", "bill of quantities", "quotation", "commercial offer",
+            "import", "export", "customs", "transaction", "unit price", "contract value",
+        )
+        lower_corpus = corpus.lower()
+        strong_evidence_candidate = host in strong_hosts or any(hint in lower_corpus for hint in commercial_hints)
+        return strong_evidence_candidate and int(candidate.get("rank") or 99) <= 4
+
+    should_render_candidate_with_hv._hv_pricing_rule = True
+    browser_fetch.should_render_candidate = should_render_candidate_with_hv
+
+
 def install_research_core_pricing() -> None:
     """Adopt shared research mechanics while keeping pricing policy in this application."""
     global _ORIGINAL_PRICING_QUERIES
@@ -130,4 +179,5 @@ def install_research_core_pricing() -> None:
         return _ORIGINAL_PRICING_QUERIES(query, planned, resolved_category)
 
     search.pricing_queries = pricing_queries_with_layers
+    _install_hv_browser_rule(search)
     search._research_core_v02_installed = True
