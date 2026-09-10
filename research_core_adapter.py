@@ -4,13 +4,14 @@ import re
 from urllib.parse import urlparse
 
 from research_core import __version__ as research_core_version, best_passages
-from research_core.ranking import cosine_similarity
+from research_core.ranking import cosine_similarity, evidence_rank_score
 
 
 _ORIGINAL_PRICING_QUERIES = None
 _ORIGINAL_BROWSER_RENDER_RULE = None
 _ORIGINAL_BENCHMARK_CHECK = None
 _ORIGINAL_EVIDENCE_LEDGER = None
+_ORIGINAL_RANK_CANDIDATES = None
 
 
 def _compact(value: str) -> str:
@@ -230,11 +231,11 @@ def _install_hv_browser_rule(search) -> None:
 
 def install_research_core_pricing() -> None:
     """Adopt shared research mechanics while keeping pricing policy in this application."""
-    global _ORIGINAL_PRICING_QUERIES, _ORIGINAL_BENCHMARK_CHECK, _ORIGINAL_EVIDENCE_LEDGER
+    global _ORIGINAL_PRICING_QUERIES, _ORIGINAL_BENCHMARK_CHECK, _ORIGINAL_EVIDENCE_LEDGER, _ORIGINAL_RANK_CANDIDATES
     import browser_fetch
     import search
 
-    if getattr(search, "_research_core_v02_installed", False):
+    if getattr(search, "_research_core_v021_installed", False):
         return
 
     search.best_passages = best_passages
@@ -247,12 +248,35 @@ def install_research_core_pricing() -> None:
         _ORIGINAL_BENCHMARK_CHECK = search.has_sufficient_commercial_benchmark
     if _ORIGINAL_EVIDENCE_LEDGER is None:
         _ORIGINAL_EVIDENCE_LEDGER = search.evidence_ledger
+    if _ORIGINAL_RANK_CANDIDATES is None:
+        _ORIGINAL_RANK_CANDIDATES = search.rank_candidates
 
     def pricing_queries_with_layers(query, planned, category=None):
         resolved_category = category or search.pricing_category(query)
         if resolved_category == "hv-equipment":
             return search.clean_queries(_hv_layered_queries(query, list(planned or [])))
         return _ORIGINAL_PRICING_QUERIES(query, planned, resolved_category)
+
+    def rank_candidates_with_shared_evidence(candidates, question, requirements=None, subquestions=None,
+                                             category="general-product"):
+        ranked = _ORIGINAL_RANK_CANDIDATES(candidates, question, requirements, subquestions, category)
+        if category not in {"hv-equipment", "industrial", "service-project"}:
+            return ranked
+        rescored = []
+        for candidate in ranked:
+            candidate = dict(candidate)
+            bonus = evidence_rank_score(
+                candidate.get("title", ""),
+                candidate.get("snippet", ""),
+                candidate.get("url", ""),
+                query_is_commercial=True,
+            )
+            # Preserve the application's subject-specific score while allowing the
+            # shared core to promote concrete evidence before the fetch shortlist is cut.
+            candidate["score"] = round(float(candidate.get("score") or 0.0) + bonus * 0.6, 3)
+            rescored.append(candidate)
+        rescored.sort(key=lambda item: (-item["score"], item.get("title", "").lower()))
+        return search.diversify(rescored)
 
     def sufficient_benchmark_with_scope(evidence, question, category):
         if category != "hv-equipment":
@@ -269,7 +293,8 @@ def install_research_core_pricing() -> None:
         return "\n\n---\n\n".join(labelled)
 
     search.pricing_queries = pricing_queries_with_layers
+    search.rank_candidates = rank_candidates_with_shared_evidence
     search.has_sufficient_commercial_benchmark = sufficient_benchmark_with_scope
     search.evidence_ledger = evidence_ledger_with_roles
     _install_hv_browser_rule(search)
-    search._research_core_v02_installed = True
+    search._research_core_v021_installed = True
