@@ -13,9 +13,10 @@ PRICE_RE = re.compile(
 )
 
 COMMERCIAL_HINTS = (
-    "unit price", "unit rate", "per panel", "each panel", "line item", "boq", "bill of quantities",
-    "winning bid", "awarded value", "award value", "commercial offer", "quotation", "purchase order",
-    "shipment", "transaction", "customs", "import", "export", "invoice",
+    "unit price", "unit rate", "per panel", "each panel", "per transformer", "each transformer",
+    "line item", "boq", "bill of quantities", "winning bid", "awarded value", "award value",
+    "commercial offer", "quotation", "purchase order", "shipment", "transaction", "customs",
+    "import", "export", "invoice",
 )
 
 STRONG_TRANSACTION_HOSTS = {"tenderkart.in", "volza.com", "zauba.com"}
@@ -73,9 +74,16 @@ def _has_visible_price(value: str) -> bool:
     return bool(PRICE_RE.search(text) or browser_fetch.has_price_signal(text))
 
 
+def _is_hv_profile(search, value: str) -> tuple[bool, str]:
+    category = search.pricing_category(value)
+    profile = search.pricing_profile(category) if hasattr(search, "pricing_profile") else category
+    return profile == "hv-equipment", category
+
+
 def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, content: str):
     """Recognise obvious line-item/transaction price evidence without depending on LLM source review."""
-    if search.pricing_category(query) != "hv-equipment":
+    is_hv, _category = _is_hv_profile(search, query)
+    if not is_hv:
         return False, []
     if not _has_visible_price(content):
         return False, []
@@ -89,7 +97,7 @@ def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, c
     lower = f"{title}\n{content}".lower()
     line_level = any(hint in lower for hint in COMMERCIAL_HINTS)
     unrelated_project_parts = sum(1 for token in (
-        "transformer", "dg set", "diesel generator", "lt panel", "low voltage board", "civil works", "cables",
+        "dg set", "diesel generator", "lt panel", "low voltage board", "civil works", "cables",
     ) if token in lower)
     if unrelated_project_parts >= 2 and not line_level:
         return False, []
@@ -108,7 +116,6 @@ def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, c
 
 
 def _needs_indicative_budget(answer: str) -> bool:
-    """Require an explicit fallback budget; incidental currency/FX is not enough."""
     lower = str(answer or "").lower()
     explicit_fallback = (
         "not web-verified" in lower
@@ -143,7 +150,7 @@ Return only the Markdown section to append, with no preamble."""
 
 
 def install_pricing_recovery_policy(search) -> None:
-    """Install HV price recovery, sensible FX behaviour, and model-knowledge fallback boundaries."""
+    """Install specialist price recovery, sensible FX behaviour, and model-knowledge fallback boundaries."""
     if getattr(search, "_pricing_recovery_policy_installed", False):
         return
 
@@ -157,9 +164,10 @@ def install_pricing_recovery_policy(search) -> None:
         result = original_assess_coverage(
             prompts, settings, model, rewritten_question, requirements, subquestions, queries, evidence
         )
-        if search.pricing_category(rewritten_question) != "hv-equipment":
+        is_hv, category = _is_hv_profile(search, rewritten_question)
+        if not is_hv:
             return result
-        if search.has_sufficient_commercial_benchmark(evidence, rewritten_question, "hv-equipment"):
+        if search.has_sufficient_commercial_benchmark(evidence, rewritten_question, category):
             return result
 
         result = dict(result or {})
@@ -167,9 +175,11 @@ def install_pricing_recovery_policy(search) -> None:
         price_gap = "No sufficiently comparable commercial price benchmark retained yet"
         result["complete"] = False
         result["gaps"] = [price_gap] + [gap for gap in gaps if gap.casefold() != price_gap.casefold()]
-        # Put deterministic price searches first because pricing_runtime truncates the
-        # combined follow-up list. Technical follow-ups must not crowd these out.
-        result["queries"] = hv_price_recovery_queries(rewritten_question)[:4]
+        if category == "power-transformers" and callable(getattr(search, "power_transformer_queries", None)):
+            recovery_queries = search.power_transformer_queries(rewritten_question, [])
+        else:
+            recovery_queries = hv_price_recovery_queries(rewritten_question)
+        result["queries"] = recovery_queries[:4]
         return result
 
     def analyse_source(prompts, settings, model, query, title, url, content):
@@ -177,14 +187,12 @@ def install_pricing_recovery_policy(search) -> None:
         if deterministic:
             return (
                 "useful",
-                "Deterministically retained price-bearing HV tender/transaction evidence",
+                "Deterministically retained price-bearing specialist tender/transaction evidence",
                 claims,
             )
         return original_analyse_source(prompts, settings, model, query, title, url, content)
 
     def currency_conversion_evidence(evidence):
-        # Do not add an FX source to a technical-only evidence set. There is no
-        # monetary value to convert, and doing so makes the final source list misleading.
         if not search.has_commercial_price(evidence):
             return None
         return original_currency_evidence(evidence)
@@ -195,7 +203,8 @@ def install_pricing_recovery_policy(search) -> None:
             job_id, prompts, settings, model, query, rewritten_question, requirements,
             subquestions, answer, evidence, allow_indicative=allow_indicative,
         )
-        if search.pricing_category(rewritten_question) != "hv-equipment":
+        is_hv, _category = _is_hv_profile(search, rewritten_question)
+        if not is_hv:
             return reviewed
 
         evidence_text = str(evidence or "").lower()
@@ -225,7 +234,8 @@ def install_pricing_recovery_policy(search) -> None:
             job_id, prompts, settings, model, rewritten_question, answer,
             evidence_text, evidence, allow_indicative=allow_indicative,
         )
-        if search.pricing_category(rewritten_question) != "hv-equipment":
+        is_hv, _category = _is_hv_profile(search, rewritten_question)
+        if not is_hv:
             return verified
 
         if allow_indicative:
@@ -238,8 +248,6 @@ def install_pricing_recovery_policy(search) -> None:
                     verified = verified.rstrip() + "\n\n" + supplement
             return verified
 
-        # Web-backed main pricing should remain authoritative. Model knowledge is
-        # useful here only as a clearly separated estimating breakdown.
         if "not web-verified" not in verified.lower():
             supplement = _model_budget_supplement(
                 search, settings, model, rewritten_question,
