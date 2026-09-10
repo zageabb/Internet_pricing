@@ -151,12 +151,14 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
     # Preserve one complete exact-description search. The remaining searches are
     # deliberately decomposed so a useful component benchmark is not excluded
     # merely because it does not repeat the entire board configuration.
-    add(f"{equipment_text} tender award BOQ price")
+    add(f"{equipment_text} tender award procurement price")
 
-    # Retain the established 132 kV -> 145 kV equipment-class alias used for
-    # disconnectors/isolators, including the earth-switch terminology.
+    # Retain the established 132 kV -> 145 kV equipment-class alias and its
+    # complementary procurement evidence searches for disconnectors/isolators.
     if re.search(r"\b132\s*k\s*v\b", base, re.I) and equipment == "disconnector":
         add("132 kV 145 kV disconnector earth switch tender award procurement price")
+        add("132 kV 145 kV disconnector earth switch schedule of rates cost data pdf")
+        add("132 kV 145 kV disconnector earth switch framework contract award lot value")
 
     if incomer_current:
         add(f'"{voltage}" "{incomer_current}" "{fault}" incomer {equipment} import export customs price')
@@ -165,8 +167,6 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
     if busbar_current:
         add(f'"{voltage}" "{busbar_current}" busbar {insulation} {equipment} technical data')
 
-    # Source-focused discovery based on sources that repeatedly expose useful
-    # tender or transaction values for difficult HV equipment searches.
     add(f"TenderKart {voltage} {fault} {breaker if equipment != 'disconnector' else equipment} award price")
     add(f"Volza {voltage} {incomer_current or busbar_current} {fault} {equipment} transaction")
 
