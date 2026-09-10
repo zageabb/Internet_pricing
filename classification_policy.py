@@ -38,6 +38,10 @@ DEFAULT_RULES = {
             "min_priced_sources": 2,
             "require_independent_domains": True,
             "strategy": "Prioritise utility procurement, awards, frameworks, BOQs, transaction/import-export evidence and cost schedules; compare voltage class, ratings, configuration and supply-versus-installed scope.",
+            "evidence_notes": "Prefer line-item or equipment-level prices. Technical-only sources can validate comparability but do not count toward the priced-source stopping threshold.",
+            "stopping_notes": "Do not stop merely because technical evidence is strong. Continue until the priced-source threshold is met or the configured research/page limits are exhausted.",
+            "fallback_notes": "Web pricing is primary. Model knowledge may supplement accessories/package allowances; a model-based headline equipment price is final fallback only.",
+            "future_notes": "Good home for future voltage-class mappings, equipment-family aliases, rating tolerances and category-specific source weighting.",
         },
         "service-project": {
             "label": "Service / project",
@@ -51,6 +55,10 @@ DEFAULT_RULES = {
             "min_priced_sources": 2,
             "require_independent_domains": True,
             "strategy": "Prioritise schedules of rates, labour/day rates, tender awards and installed project costs; compare geography, quantities and inclusions.",
+            "evidence_notes": "Prefer rate cards, schedules of rates, contract awards and clearly scoped installed-project values.",
+            "stopping_notes": "Seek more than one independent commercial benchmark where possible because labour and project scope vary materially by region and inclusion.",
+            "fallback_notes": "Use model knowledge only to explain typical cost structure or allowances when the web evidence is incomplete; label it separately.",
+            "future_notes": "Future sections could hold geography rules, labour categories, mobilisation, travel and installed-scope normalization.",
         },
         "consumer-retail": {
             "label": "Consumer / retail",
@@ -74,6 +82,10 @@ DEFAULT_RULES = {
             "min_priced_sources": 3,
             "require_independent_domains": True,
             "strategy": "Prioritise exact model/specification retailer listings and visible current prices; reject generic category pages and different models. Seek multiple independent priced listings before declaring a market benchmark.",
+            "evidence_notes": "Count only matching product/model/specification listings with a visible usable price. Currency-only sources never count as priced products.",
+            "stopping_notes": "Default: require three independent priced sources before stopping. This prevents one retailer plus technical pages and FX data from being mistaken for a market comparison.",
+            "fallback_notes": "If current retail prices cannot be found, a model-based price is a final fallback only. Model knowledge may still explain accessory or bundle allowances separately.",
+            "future_notes": "Future sections could hold family aliases, generation/model matching, minimum specification match, stock-state rules and marketplace exclusions.",
         },
         "industrial": {
             "label": "Industrial equipment",
@@ -87,6 +99,10 @@ DEFAULT_RULES = {
             "min_priced_sources": 2,
             "require_independent_domains": True,
             "strategy": "Prioritise manufacturer/distributor catalogues, quotations and procurement benchmarks; compare capacity, rating, configuration and scope.",
+            "evidence_notes": "Prefer quoted/catalogue prices tied to capacity, rating and configuration; use technical sources to judge comparability.",
+            "stopping_notes": "Require multiple independent priced sources by default rather than accepting the first commercially priced result.",
+            "fallback_notes": "Model knowledge can supply clearly labelled accessory, freight, installation or contingency allowances after web pricing has been used first.",
+            "future_notes": "Future sections could hold category-specific rating parsers, sizing attributes, regional multipliers and supplier/source preferences.",
         },
         "general-product": {
             "label": "General product",
@@ -96,6 +112,10 @@ DEFAULT_RULES = {
             "min_priced_sources": 3,
             "require_independent_domains": True,
             "strategy": "Prioritise exact-description supplier, distributor and catalogue prices before broader comparable-product evidence. Treat this as a catch-all category and seek multiple independent priced listings before stopping.",
+            "evidence_notes": "This catch-all should still count actual price-bearing product evidence rather than retained technical/background sources or FX references.",
+            "stopping_notes": "Default: require three independent priced sources. A single supplier price must not be described as a market comparison.",
+            "fallback_notes": "Use model knowledge only after web price research is exhausted; it may supplement accessories or cost breakdowns when clearly labelled.",
+            "future_notes": "Use this category to identify recurring uncategorised families. When a family becomes important, add a dedicated category rather than endlessly expanding the catch-all.",
         },
     },
 }
@@ -119,6 +139,11 @@ def _clean_list(value, *, max_items=100, max_length=160):
         if len(rows) >= max_items:
             break
     return rows
+
+
+def _clean_note(value, fallback):
+    text = str(value if value is not None else fallback).strip()
+    return text[:6000]
 
 
 def _validated_rules(payload):
@@ -148,9 +173,8 @@ def _validated_rules(payload):
         rule["min_priced_sources"] = max(1, min(10, minimum))
         if "require_independent_domains" in incoming:
             rule["require_independent_domains"] = bool(incoming.get("require_independent_domains"))
-        strategy = " ".join(str(incoming.get("strategy", rule["strategy"]) or "").split())
-        if strategy:
-            rule["strategy"] = strategy[:1500]
+        for key in ("strategy", "evidence_notes", "stopping_notes", "fallback_notes", "future_notes"):
+            rule[key] = _clean_note(incoming.get(key), rule[key])
     return current
 
 
