@@ -37,6 +37,25 @@ Category strategies are deliberately separate:
 
 A request such as `Find pricing for 11 kV AIS 3200 A switchboard, 25 kA, 2 incomers 2000 A and 8 feeders 630 A` is deliberately decomposed into searches such as feeder-panel award/BOQ evidence, 2000 A incomer import/export transactions, 3200 A busbar technical validation, and high-yield tender/transaction sources. The final answer can then combine those evidence records into a normalized estimate rather than pretending an exact ten-panel public quotation must exist.
 
+## Research learning and regression reference
+
+The diagnosis and design lessons from the September 2026 search regression are retained in [`docs/RESEARCH_SEARCH_LESSONS.md`](docs/RESEARCH_SEARCH_LESSONS.md).
+
+That document explains:
+
+- why useful pages could appear to be ignored before they were ever read;
+- why complex HV searches must be decomposed into evidence layers;
+- how `research-core` and Internet Pricing divide responsibilities;
+- how candidate ranking, browser fallback, passage extraction and stopping criteria interact;
+- why whole-project values must not automatically become equipment benchmarks;
+- the evidence roles used by the application;
+- useful source patterns observed during development, including tender, transaction and OEM evidence;
+- the reference 11 kV AIS switchboard regression case;
+- recommended search telemetry and structured rejection reasons for future development;
+- the required deployment process when the pinned `research-core` revision changes.
+
+Future changes to query generation, ranking, retrieval or evidence handling should be checked against that regression document before release.
+
 ## Web page reading
 
 Internet Pricing keeps the lightweight reader as the default path. Public HTML and PDFs are fetched with bounded HTTP requests first, then structured commerce data, product metadata, tables and visible text are extracted.
