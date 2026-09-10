@@ -9,6 +9,9 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import search as search_module
 from browser_fetch import install_browser_fallback
+from classification_policy import (CATEGORY_ORDER, classification_report, get_classification_rules,
+                                   install_classification_policy, reset_classification_rules,
+                                   save_classification_rules)
 from document_extraction import clean_documents, document_context, extract_upload
 from pricing_recovery_policy import install_pricing_recovery_policy
 from pricing_runtime import install_hv_runtime
@@ -19,6 +22,7 @@ from settings_store import PROMPTS, get_settings, save_prompts, save_settings
 
 install_browser_fallback()
 install_research_core_pricing()
+install_classification_policy(search_module)
 install_hv_runtime(search_module)
 install_pricing_recovery_policy(search_module)
 
@@ -80,6 +84,34 @@ def index():
 @app.get("/settings")
 def settings_page():
     return render_template("settings.html", settings=get_settings(), prompts=PROMPTS.load())
+
+
+@app.get("/classifications")
+def classifications_page():
+    return render_template("classifications.html", rules=get_classification_rules(), category_order=CATEGORY_ORDER)
+
+
+@app.post("/api/classifications")
+def classifications_save():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("categories"), dict):
+        return jsonify(ok=False, message="Classification categories were not supplied."), 400
+    rules = save_classification_rules(payload)
+    return jsonify(ok=True, rules=rules, message="Classification and stopping rules saved.")
+
+
+@app.post("/api/classifications/reset")
+def classifications_reset():
+    return jsonify(ok=True, rules=reset_classification_rules(), message="Classification rules reset to defaults.")
+
+
+@app.post("/api/classifications/test")
+def classifications_test():
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "").strip()[:20_000]
+    if not query:
+        return jsonify(ok=False, message="Enter a request to classify."), 400
+    return jsonify(ok=True, result=classification_report(query))
 
 
 @app.post("/api/search")
