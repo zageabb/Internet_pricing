@@ -9,6 +9,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import search as search_module
 from browser_fetch import install_browser_fallback
+from classification_coverage import install_classification_coverage_guard
 from classification_policy import (CATEGORY_ORDER, classification_report, get_classification_rules,
                                    install_classification_policy, reset_classification_rules,
                                    save_classification_rules)
@@ -25,6 +26,7 @@ install_research_core_pricing()
 install_classification_policy(search_module)
 install_hv_runtime(search_module)
 install_pricing_recovery_policy(search_module)
+install_classification_coverage_guard(search_module)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30_000_000
