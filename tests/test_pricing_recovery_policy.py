@@ -86,6 +86,14 @@ def test_missing_headline_price_requires_model_fallback_budget():
     assert _needs_indicative_budget(technical_only_answer) is True
 
 
+def test_fx_or_other_currency_line_does_not_count_as_fallback_budget():
+    answer = (
+        "The technical sources contain no equipment price. "
+        "Reference exchange rate: 1 EUR = 1.16 USD."
+    )
+    assert _needs_indicative_budget(answer) is True
+
+
 def test_existing_explicit_model_fallback_is_not_duplicated():
     answer = (
         "## Indicative budget — NOT WEB-VERIFIED\n"
