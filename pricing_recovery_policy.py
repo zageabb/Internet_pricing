@@ -108,12 +108,15 @@ def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, c
 
 
 def _needs_indicative_budget(answer: str) -> bool:
+    """Require an explicit fallback budget; incidental currency/FX is not enough."""
     lower = str(answer or "").lower()
-    if "not web-verified" in lower and (
-        "low" in lower and "base" in lower and "high" in lower
-    ):
-        return False
-    return not bool(PRICE_RE.search(str(answer or "")))
+    explicit_fallback = (
+        "not web-verified" in lower
+        and "low" in lower
+        and "base" in lower
+        and "high" in lower
+    )
+    return not explicit_fallback
 
 
 def _model_budget_supplement(search, settings, model, question: str, *, headline_fallback: bool, answer: str = "") -> str:
@@ -202,6 +205,10 @@ def install_pricing_recovery_policy(search) -> None:
             or "no readable web evidence" in evidence_text
             or "no usable evidence" in evidence_text
             or "no relevant pricing evidence" in evidence_text
+            or "returned no results" in evidence_text
+            or "none passed the equipment-relevance gate" in evidence_text
+            or "no page-read budget" in evidence_text
+            or "none produced readable evidence" in evidence_text
         )
         if final_web_fallback and _needs_indicative_budget(reviewed):
             supplement = _model_budget_supplement(
