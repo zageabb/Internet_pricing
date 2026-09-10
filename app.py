@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import search as search_module
 from browser_fetch import install_browser_fallback
 from classification_coverage import install_classification_coverage_guard
-from classification_policy import (CATEGORY_ORDER, classification_report, get_classification_rules,
+from classification_policy import (classification_report, get_category_order, get_classification_rules,
                                    install_classification_policy, reset_classification_rules,
                                    save_classification_rules)
 from document_extraction import clean_documents, document_context, extract_upload
@@ -61,8 +61,6 @@ def _document_search_brief(user_query, documents, requested_model):
     settings = get_settings()
     model = requested_model or settings["model"]
     material = document_context(documents)
-    # The extracted documents are already capped, but keep this first-pass prompt compact
-    # enough for local models while preserving a useful amount of detailed specification.
     if len(material) > 55_000:
         material = material[:45_000] + "\n\n[...middle content omitted for briefing...]\n\n" + material[-10_000:]
     prompt = (DOCUMENT_BRIEF_PROMPT
@@ -90,7 +88,8 @@ def settings_page():
 
 @app.get("/classifications")
 def classifications_page():
-    return render_template("classifications.html", rules=get_classification_rules(), category_order=CATEGORY_ORDER)
+    rules = get_classification_rules()
+    return render_template("classifications.html", rules=rules, category_order=get_category_order(rules))
 
 
 @app.post("/api/classifications")
@@ -99,12 +98,15 @@ def classifications_save():
     if not isinstance(payload.get("categories"), dict):
         return jsonify(ok=False, message="Classification categories were not supplied."), 400
     rules = save_classification_rules(payload)
-    return jsonify(ok=True, rules=rules, message="Classification and stopping rules saved.")
+    return jsonify(ok=True, rules=rules, category_order=get_category_order(rules),
+                   message="Classification and stopping rules saved.")
 
 
 @app.post("/api/classifications/reset")
 def classifications_reset():
-    return jsonify(ok=True, rules=reset_classification_rules(), message="Classification rules reset to defaults.")
+    rules = reset_classification_rules()
+    return jsonify(ok=True, rules=rules, category_order=get_category_order(rules),
+                   message="Classification rules reset to defaults.")
 
 
 @app.post("/api/classifications/test")
@@ -149,8 +151,6 @@ def search():
     if not raw_query and not documents:
         return jsonify(ok=False, message="Enter a research question or attach a document before searching."), 400
 
-    # Older UI versions inserted this generic analysis request for file-only searches.
-    # Treat it as no user instruction so the document itself becomes the search request.
     user_query = "" if documents and raw_query.casefold() == LEGACY_ATTACHMENT_QUERY.casefold() else raw_query
     requested_model = str(payload.get("model") or "")[:200]
     document_brief = None
@@ -167,8 +167,6 @@ def search():
         return jsonify(ok=False, message="Could not determine what to research from the request or attachment."), 400
 
     allowed_only = str(payload.get("allowed_only") or "").lower() in {"1", "true", "yes", "on"}
-    # Important: the document brief is now the normal query. Do not append the raw
-    # document context again, otherwise the legacy attachment behaviour returns.
     job = start_job(app, effective_query, history, requested_model, allowed_only, "")
     return jsonify(ok=True, job=job, documents=documents,
                    document_names=[item["name"] for item in documents],
