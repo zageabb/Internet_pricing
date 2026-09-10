@@ -21,10 +21,11 @@
       <div>
         <span class="eyebrow">Research policy</span>
         <h1>Classifications & Rules</h1>
-        <p>See exactly how a request is categorised, what evidence each category seeks, and when research is allowed to stop.</p>
+        <p>Create and manage pricing categories, control how requests are classified, and define the commercial evidence needed before research can stop.</p>
       </div>
       <div class="heading-actions">
         <button class="btn outline" id="reset-rules" type="button">Reset defaults</button>
+        <button class="btn outline" id="add-category" type="button">+ Add category</button>
         <button class="btn primary" id="save-rules" type="button">Save all rules</button>
       </div>
     </header>
@@ -43,44 +44,58 @@
     </section>
 
     <section class="policy-guide">
-      <div class="guide-card"><span class="step">1</span><strong>Classification</strong><p>Keywords, phrases and patterns decide which category owns the request.</p></div>
-      <div class="guide-card"><span class="step">2</span><strong>Search strategy</strong><p>Each category tells the research engine which evidence types to favour.</p></div>
-      <div class="guide-card"><span class="step">3</span><strong>Evidence + stopping</strong><p>Only qualifying price-bearing sources count toward the stop threshold.</p></div>
-      <div class="guide-card"><span class="step">4</span><strong>Fallback</strong><p>Category notes keep web evidence and model-knowledge behaviour explicit.</p></div>
+      <div class="guide-card"><span class="step">1</span><strong>Classification</strong><p>Enabled categories are checked from top to bottom. First matching category wins.</p></div>
+      <div class="guide-card"><span class="step">2</span><strong>Search profile</strong><p>A category inherits proven search mechanics from Consumer, Industrial, HV, Service or General.</p></div>
+      <div class="guide-card"><span class="step">3</span><strong>Evidence + stopping</strong><p>Only qualifying price-bearing sources count toward the category threshold.</p></div>
+      <div class="guide-card"><span class="step">4</span><strong>Extend safely</strong><p>Duplicate a close category, tune its rules, then test the classification before using it.</p></div>
     </section>
 
-    <div class="category-index">
+    <div class="category-index" id="category-index">
       {% for category in category_order %}
       {% set rule = rules.categories[category] %}
-      <a href="#category-{{ category }}"><strong>{{ rule.label }}</strong><span>{{ category }}</span><em>{{ rule.min_priced_sources }} priced source{% if rule.min_priced_sources != 1 %}s{% endif %}</em></a>
+      <a href="#category-{{ category }}" data-index-category="{{ category }}"><strong>{{ rule.label }}</strong><span>{{ category }}</span><em>{% if not rule.enabled %}Disabled · {% endif %}{{ rule.min_priced_sources }} priced source{% if rule.min_priced_sources != 1 %}s{% endif %}</em></a>
       {% endfor %}
     </div>
 
     <form id="classification-form">
+      <div id="category-list">
       {% for category in category_order %}
       {% set rule = rules.categories[category] %}
-      <details class="category-card" id="category-{{ category }}" data-category="{{ category }}" {% if loop.first %}open{% endif %}>
+      <details class="category-card{% if not rule.enabled %} disabled-category{% endif %}" id="category-{{ category }}" data-category="{{ category }}" data-protected="{{ 'true' if category == 'general-product' else 'false' }}" {% if loop.first %}open{% endif %}>
         <summary>
-          <div class="category-title"><span class="category-key">{{ category }}</span><strong>{{ rule.label }}</strong></div>
-          <div class="category-summary"><span>{{ rule.min_priced_sources }} priced source{% if rule.min_priced_sources != 1 %}s{% endif %}</span><span>{% if rule.require_independent_domains %}Independent domains{% else %}Duplicate domains allowed{% endif %}</span></div>
+          <div class="category-title"><span class="category-key">{{ category }}</span><strong data-display-label>{{ rule.label }}</strong>{% if not rule.enabled %}<span class="disabled-pill">Disabled</span>{% endif %}</div>
+          <div class="category-summary"><span data-summary-profile>{{ rule.search_profile }}</span><span data-summary-price>{{ rule.min_priced_sources }} priced source{% if rule.min_priced_sources != 1 %}s{% endif %}</span><span>{% if rule.require_independent_domains %}Independent domains{% else %}Duplicate domains allowed{% endif %}</span></div>
         </summary>
 
         <div class="category-body">
+          <div class="category-toolbar">
+            <button class="btn outline small move-up" type="button">↑ Up</button>
+            <button class="btn outline small move-down" type="button">↓ Down</button>
+            <button class="btn outline small duplicate-category" type="button">Duplicate</button>
+            {% if category != 'general-product' %}<button class="btn danger small delete-category" type="button">Delete</button>{% endif %}
+          </div>
+
           <section class="rule-section active-section">
-            <div class="section-heading"><div><span class="status-pill active">Active</span><h3>Classification</h3></div><p>Rules used before research starts. Categories are evaluated in the order shown on this page.</p></div>
+            <div class="section-heading"><div><span class="status-pill active">Active</span><h3>Category identity & classification</h3></div><p>The ID is used internally and in saved rules. Categories are evaluated in the order shown on this page.</p></div>
+            <div class="rule-grid three identity-grid">
+              <label>Category ID <small>Lowercase letters, numbers and hyphens.</small><input data-field="id" value="{{ category }}" {% if category == 'general-product' %}readonly{% endif %}></label>
+              <label>Display name <small>Shown in this page and classification results.</small><input data-field="label" value="{{ rule.label }}"></label>
+              <label>Search profile <small>Inherit the closest proven search/relevance mechanics.</small><select data-field="search_profile" {% if category == 'general-product' %}disabled{% endif %}><option value="general-product" {% if rule.search_profile == 'general-product' %}selected{% endif %}>General product</option><option value="consumer-retail" {% if rule.search_profile == 'consumer-retail' %}selected{% endif %}>Consumer / retail</option><option value="industrial" {% if rule.search_profile == 'industrial' %}selected{% endif %}>Industrial equipment</option><option value="service-project" {% if rule.search_profile == 'service-project' %}selected{% endif %}>Service / project</option><option value="hv-equipment" {% if rule.search_profile == 'hv-equipment' %}selected{% endif %}>HV equipment</option></select></label>
+            </div>
             {% if category != 'general-product' %}
+            <label class="checkbox-card enabled-card"><input data-field="enabled" type="checkbox" {% if rule.enabled %}checked{% endif %}><span><strong>Category enabled</strong><small>Disabled categories remain saved but are skipped during classification.</small></span></label>
             <div class="rule-grid three">
               <label>Keywords <small>One per line. Exact token matches.</small><textarea data-field="keywords" rows="8">{{ rule.keywords|join('\n') }}</textarea></label>
               <label>Phrases <small>One per line. Matches phrases anywhere in the request.</small><textarea data-field="phrases" rows="8">{{ rule.phrases|join('\n') }}</textarea></label>
               <label>Regex patterns <small>Advanced. Invalid regex is ignored when saved.</small><textarea data-field="patterns" rows="8">{{ rule.patterns|join('\n') }}</textarea></label>
             </div>
             {% else %}
-            <div class="catchall-note"><strong>Catch-all category</strong><p>General product has no matching keywords. It is selected only when no specialist category above matches.</p></div>
+            <div class="catchall-note"><strong>Protected catch-all category</strong><p>General product cannot be deleted or disabled. It is selected only when no enabled specialist category matches.</p></div>
             {% endif %}
           </section>
 
           <section class="rule-section active-section">
-            <div class="section-heading"><div><span class="status-pill active">Active</span><h3>Search strategy</h3></div><p>This text is supplied to the research pipeline when this category is selected.</p></div>
+            <div class="section-heading"><div><span class="status-pill active">Active</span><h3>Search strategy</h3></div><p>This category-specific instruction is supplied to the research pipeline in addition to its inherited search profile.</p></div>
             <label>Category strategy<textarea data-field="strategy" rows="5">{{ rule.strategy }}</textarea></label>
           </section>
 
@@ -90,16 +105,16 @@
               <label>Minimum qualifying priced sources<input data-field="min_priced_sources" type="number" min="1" max="10" value="{{ rule.min_priced_sources }}"></label>
               <label class="checkbox-card"><input data-field="require_independent_domains" type="checkbox" {% if rule.require_independent_domains %}checked{% endif %}><span><strong>Require independent domains</strong><small>Multiple pages from one website count as one benchmark source.</small></span></label>
             </div>
-            <label>Evidence notes <small>Category-specific reference notes. Stored now so this section can grow into richer evidence rules later.</small><textarea data-field="evidence_notes" rows="4">{{ rule.evidence_notes }}</textarea></label>
+            <label>Evidence notes <small>Category-specific reference notes and a home for richer evidence rules later.</small><textarea data-field="evidence_notes" rows="4">{{ rule.evidence_notes }}</textarea></label>
           </section>
 
           <section class="rule-section">
-            <div class="section-heading"><div><span class="status-pill mixed">Threshold active · notes reference</span><h3>Stopping rules</h3></div><p>The numerical threshold above is enforced. These notes document the intended category behaviour for future expansion.</p></div>
+            <div class="section-heading"><div><span class="status-pill mixed">Threshold active · notes reference</span><h3>Stopping rules</h3></div><p>The numerical threshold above is enforced. These notes document intended behaviour for future category-specific controls.</p></div>
             <label>Stopping notes<textarea data-field="stopping_notes" rows="4">{{ rule.stopping_notes }}</textarea></label>
           </section>
 
           <section class="rule-section">
-            <div class="section-heading"><div><span class="status-pill reference">Reference</span><h3>Fallback & enrichment</h3></div><p>Documents how model knowledge should be used after web research. This section is deliberately separate from headline web pricing.</p></div>
+            <div class="section-heading"><div><span class="status-pill reference">Reference</span><h3>Fallback & enrichment</h3></div><p>Documents how model knowledge should be used after web research.</p></div>
             <label>Fallback notes<textarea data-field="fallback_notes" rows="4">{{ rule.fallback_notes }}</textarea></label>
           </section>
 
@@ -110,9 +125,10 @@
         </div>
       </details>
       {% endfor %}
+      </div>
     </form>
 
-    <div class="sticky-save"><span id="classification-status">Changes are local to this Internet Pricing installation.</span><button class="btn primary" id="save-rules-bottom" type="button">Save all rules</button></div>
+    <div class="sticky-save"><span id="classification-status">Changes are local to this Internet Pricing installation.</span><div class="sticky-actions"><button class="btn outline" id="add-category-bottom" type="button">+ Add category</button><button class="btn primary" id="save-rules-bottom" type="button">Save all rules</button></div></div>
   </main>
 </div>
 <script src="{{ url_for('static', filename='classification.js') }}"></script>
