@@ -37,8 +37,17 @@ def test_hv_queries_split_complex_board_into_evidence_layers():
     assert not all("3200A" in query and "2000A" in query and "630A" in query for query in queries)
 
 
-@patch("research_core_adapter.browser_fetch.public_url", create=True)
-def test_placeholder(_unused):
-    # Kept intentionally empty; browser behaviour is covered by the existing
-    # browser-fallback suite after the adapter is installed by app startup.
-    pass
+def test_adapter_allows_bounded_rendering_for_strong_hv_evidence_page():
+    install_research_core_pricing()
+    candidate = {
+        "title": "11kV 630A 25kA VCB tender award",
+        "url": "https://tenderkart.in/tender/example",
+        "snippet": "Tender result for 11kV VCB panels; detailed value loads in the page application.",
+        "query": '"11kV" "630A" "25kA" feeder VCB panel tender award unit price',
+        "rank": 1,
+    }
+    page = {"text": "Tender detail page without a visible value in lightweight HTML", "content_type": "text/html"}
+    with patch("search.public_url", return_value=True), \
+            patch("browser_fetch.browser_fallback_enabled", return_value=True), \
+            patch("browser_fetch.browser_page_limit", return_value=3):
+        assert browser_fetch.should_render_candidate(candidate, page) is True
