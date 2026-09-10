@@ -129,7 +129,7 @@ function collectRules() {
 
   if (!categories["general-product"]) error ||= "The protected general-product catch-all category is required.";
   if (error) throw new Error(error);
-  return {version: 2, categories};
+  return {version: 3, categories};
 }
 
 async function saveRules() {
