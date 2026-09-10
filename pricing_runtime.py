@@ -87,10 +87,270 @@ def _collect_relevance(search, candidates: list[dict], question: str, category: 
     return accepted, rejected
 
 
+def _requested_hv_family(question: str) -> str:
+    lower = str(question or "").lower()
+    if any(token in lower for token in ("disconnector", "isolator", "disconnect switch")):
+        return "disconnector"
+    if "transformer" in lower:
+        return "transformer"
+    if any(token in lower for token in ("surge arrester", "arrester")):
+        return "arrester"
+    if any(token in lower for token in (
+        "switchgear", "switchboard", "vcb", "vacuum circuit breaker", "ais", "gis",
+        "incomer", "feeder", "busbar", "panel",
+    )):
+        return "switchgear"
+    if any(token in lower for token in ("circuit breaker", "circuit-breaker", "breaker")):
+        return "breaker"
+    return "hv"
+
+
+def _voltage_values_kv(value: str) -> list[float]:
+    import re
+    values = []
+    for amount, unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(kV|V)\b", str(value or ""), re.I):
+        number = float(amount.replace(",", "."))
+        values.append(number if unit.lower() == "kv" else number / 1000.0)
+    return values
+
+
+def _hv_candidate_relevance(candidate: dict, question: str) -> tuple[bool, str, float]:
+    """Hard relevance gate used before any commercial/evidence score can help a result."""
+    import re
+
+    text = f"{candidate.get('title', '')} {candidate.get('snippet', candidate.get('body', ''))}"
+    lower = " ".join(text.lower().split())
+    family = _requested_hv_family(question)
+    target_lower = str(question or "").lower()
+
+    if "surge arrester" in lower and family != "arrester":
+        return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+
+    switchgear_primary = (
+        "switchgear", "switchboard", "vcb", "vacuum circuit breaker",
+        "metal clad", "metal-clad", "medium voltage", "mv switchgear",
+        "incomer panel", "feeder panel", "breaker panel",
+    )
+    has_rating_context = bool(re.search(r"\b\d+(?:[.,]\d+)?\s*(?:k\s*v|k\s*a)\b", lower, re.I))
+    panel_electrical = (
+        "panel" in lower
+        and has_rating_context
+        and any(token in lower for token in ("breaker", "feeder", "incomer", "busbar", "vacuum", "switch"))
+    )
+
+    if family == "switchgear":
+        if not any(token in lower for token in switchgear_primary) and not panel_electrical:
+            return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+    elif family == "disconnector":
+        if not any(token in lower for token in (
+            "disconnector", "isolator", "disconnect switch", "disconnecting switch", "earth switch"
+        )):
+            return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+    elif family == "transformer":
+        if "transformer" not in lower:
+            return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+    elif family == "arrester":
+        if "arrester" not in lower:
+            return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+    elif family == "breaker":
+        if not any(token in lower for token in ("circuit breaker", "circuit-breaker", "breaker", "vcb")):
+            return False, "WRONG_EQUIPMENT_FAMILY", 0.0
+    elif not has_rating_context and not any(token in lower for token in (
+        "switchgear", "substation", "transformer", "disconnector", "circuit breaker"
+    )):
+        return False, "INSUFFICIENT_ELECTRICAL_CONTEXT", 0.0
+
+    target_voltages = _voltage_values_kv(question)
+    result_voltages = _voltage_values_kv(text)
+    if target_voltages and result_voltages and min(target_voltages) >= 3 and max(result_voltages) < 1:
+        return False, "WRONG_VOLTAGE_CLASS", 0.0
+
+    score = 1.0
+    if target_voltages and result_voltages:
+        target = target_voltages[0]
+        if any(abs(value - target) <= max(1.5, target * 0.15) for value in result_voltages):
+            score += 0.45
+        elif target <= 11.5 and any(11.5 <= value <= 13.0 for value in result_voltages):
+            score += 0.35
+        else:
+            score -= 0.15
+
+    if family == "switchgear":
+        score += 0.2 * sum(1 for token in ("switchgear", "switchboard", "vcb", "feeder", "incomer", "busbar")
+                           if token in lower)
+        if "ais" in target_lower and ("gis" in lower or "rmu" in lower) and "ais" not in lower:
+            score -= 0.45
+        if "gis" in target_lower and "ais" in lower and "gis" not in lower:
+            score -= 0.45
+
+    requested_ratings = set(re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:k\s*v|k\s*a|a)\b", target_lower, re.I))
+    normalized_text = re.sub(r"\s+", "", lower)
+    rating_hits = sum(1 for rating in requested_ratings if re.sub(r"\s+", "", rating) in normalized_text)
+    score += min(0.6, rating_hits * 0.15)
+    return True, "RELEVANT_EQUIPMENT", max(0.1, score)
+
+
+def _hv_query_relevant(value: str, question: str) -> bool:
+    ok, _reason, _score = _hv_candidate_relevance({"title": value, "snippet": ""}, question)
+    return ok
+
+
+def _rating_tokens(value: str, unit: str) -> list[str]:
+    import re
+    pattern = rf"\b\d+(?:[.,]\d+)?\s*{re.escape(unit)}\b"
+    found = []
+    for match in re.finditer(pattern, str(value or ""), re.I):
+        token = re.sub(r"\s+", "", match.group(0))
+        token = token[:-len(unit)] + unit
+        if token.lower() not in {item.lower() for item in found}:
+            found.append(token)
+    return found
+
+
+def _context_current(value: str, words: tuple[str, ...]) -> str:
+    import re
+    text = " ".join(str(value or "").split())
+    for word in words:
+        after = re.search(rf"\b{re.escape(word)}s?\b[^,;:.]{{0,28}}?\b(\d+(?:[.,]\d+)?\s*A)\b", text, re.I)
+        if after:
+            return re.sub(r"\s+", "", after.group(1))
+        before = re.search(rf"\b(\d+(?:[.,]\d+)?\s*A)\b\s+(?:rated\s+)?{re.escape(word)}s?\b", text, re.I)
+        if before:
+            return re.sub(r"\s+", "", before.group(1))
+    return ""
+
+
+def _hv_relaxed_queries(question: str, round_number: int) -> list[str]:
+    """Progressively simplify web searches while preserving the original spec for later comparison."""
+    import re
+    base = " ".join(str(question or "").split())
+    voltages = _rating_tokens(base, "kV")
+    faults = _rating_tokens(base, "kA")
+    currents = _rating_tokens(base, "A")
+    voltage = voltages[0] if voltages else "11kV"
+    fault = faults[0] if faults else ""
+    incomer = _context_current(base, ("incomer", "incoming"))
+    feeder = _context_current(base, ("feeder", "outgoing"))
+    busbar = _context_current(base, ("busbar", "bus bar", "main bus"))
+    if not busbar and currents:
+        try:
+            busbar = max(currents, key=lambda token: float(re.sub(r"[^0-9.]", "", token)))
+        except ValueError:
+            busbar = currents[0]
+    insulation = "AIS" if re.search(r"\bais\b", base, re.I) else "GIS" if re.search(r"\bgis\b", base, re.I) else ""
+
+    if round_number <= 2:
+        values = [
+            f'"{voltage}" "{feeder}" VCB feeder panel unit price' if feeder else "",
+            f'"{voltage}" "{incomer}" incomer switchgear price' if incomer else "",
+            f'"{voltage}" "{fault}" switchgear tender BOQ price' if fault else f'"{voltage}" switchgear tender BOQ price',
+            f'12kV {insulation} switchgear "{feeder or busbar}" price'.strip(),
+        ]
+    else:
+        values = [
+            f"{voltage} VCB panel tender award price",
+            f"12kV medium voltage {insulation} switchgear BOQ unit price".strip(),
+            f"{voltage} switchgear import export transaction value",
+            f"{voltage} {insulation} switchgear quotation commercial offer".strip(),
+        ]
+    return list(dict.fromkeys(" ".join(item.split()) for item in values if item.strip()))
+
+
+def _install_relevance_gate(search) -> None:
+    if getattr(search, "_hv_strict_relevance_installed", False):
+        return
+
+    original_subject_filter = search.subject_relevant_candidates
+    original_rank = search.rank_candidates
+    original_search_web = search.search_web
+
+    def subject_relevant_candidates(candidates, question, category=None):
+        resolved = category or search.pricing_category(question)
+        if resolved != "hv-equipment":
+            return original_subject_filter(candidates, question, resolved)
+        accepted = []
+        for candidate in candidates:
+            ok, _reason, score = _hv_candidate_relevance(candidate, question)
+            if not ok:
+                continue
+            item = dict(candidate)
+            item["subject_relevance_score"] = round(float(score), 3)
+            accepted.append(item)
+        return accepted
+
+    def rank_candidates(candidates, question, requirements=None, subquestions=None, category="general-product"):
+        if category == "hv-equipment":
+            candidates = subject_relevant_candidates(candidates, question, category)
+        ranked = original_rank(candidates, question, requirements, subquestions, category)
+        if category != "hv-equipment":
+            return ranked
+        for item in ranked:
+            item["score"] = round(
+                float(item.get("score") or 0.0) + float(item.get("subject_relevance_score") or 0.0) * 1.5,
+                3,
+            )
+        ranked.sort(key=lambda item: (-item["score"], item.get("title", "").lower()))
+        return search.diversify(ranked)
+
+    def search_web(query, backend_setting="auto", max_results=6):
+        if search.pricing_category(query) != "hv-equipment":
+            return original_search_web(query, backend_setting, max_results)
+
+        rows, seen, status = [], set(), []
+        relevant_urls, relevant_backends = set(), 0
+        for backend in search.configured_search_backends(backend_setting):
+            try:
+                found = list(search.DDGS(timeout=12).text(
+                    query, region="wt-wt", safesearch="moderate",
+                    max_results=max_results, backend=backend,
+                ) or [])
+                backend_relevant = 0
+                normalized_rows = []
+                for row in found:
+                    url = search.canonical_url(str(row.get("href") or row.get("url") or ""))
+                    if not url:
+                        continue
+                    probe = {
+                        "title": str(row.get("title") or url),
+                        "snippet": str(row.get("body") or ""),
+                        "url": url,
+                    }
+                    ok, _reason, _score = _hv_candidate_relevance(probe, query)
+                    if ok:
+                        backend_relevant += 1
+                        relevant_urls.add(url)
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    item = dict(row)
+                    item["href"] = url
+                    item["search_backend"] = backend
+                    normalized_rows.append(item)
+                rows.extend(normalized_rows)
+                status.append(f"{backend}: {len(found)} / {backend_relevant} relevant")
+                if backend_relevant:
+                    relevant_backends += 1
+            except Exception as exc:
+                status.append(f"{backend}: {search.request_error(exc)}")
+
+            if relevant_backends >= 2 or len(relevant_urls) >= max(4, int(max_results)):
+                break
+        return rows, status
+
+    search.hv_candidate_relevance = _hv_candidate_relevance
+    search.hv_query_relevant = _hv_query_relevant
+    search.hv_relaxed_queries = _hv_relaxed_queries
+    search.subject_relevant_candidates = subject_relevant_candidates
+    search.rank_candidates = rank_candidates
+    search.search_web = search_web
+    search._hv_strict_relevance_installed = True
+
+
 def install_hv_runtime(search) -> None:
     """Replace only the HV research loop; all other categories retain the legacy runner."""
     if getattr(search, "_hv_relevance_runtime_installed", False):
         return
+    _install_relevance_gate(search)
     original_run = search._run
 
     def run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
