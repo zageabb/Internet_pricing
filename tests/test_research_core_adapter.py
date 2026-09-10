@@ -14,15 +14,15 @@ from research_core_adapter import _hv_layered_queries, install_research_core_pri
 TARGET = "11kV AIS 3200A switchboard, 25kA, 2 incomers 2000A, 8 feeders 630A"
 
 
-def test_research_core_dependency_is_v02():
-    assert research_core.__version__ == "0.2.0"
+def test_research_core_dependency_is_v021():
+    assert research_core.__version__ == "0.2.1"
 
 
 def test_pricing_adapter_installs_shared_mechanics():
     install_research_core_pricing()
     assert search.best_passages is best_passages
     assert search.cosine_similarity is cosine_similarity
-    assert search.RESEARCH_CORE_VERSION == "0.2.0"
+    assert search.RESEARCH_CORE_VERSION == "0.2.1"
 
 
 def test_hv_queries_split_complex_board_into_evidence_layers():
@@ -35,6 +35,28 @@ def test_hv_queries_split_complex_board_into_evidence_layers():
     assert "TenderKart" in joined
     assert "Volza" in joined
     assert not all("3200A" in query and "2000A" in query and "630A" in query for query in queries)
+
+
+def test_shared_evidence_score_promotes_commercial_result_before_fetch_shortlist():
+    install_research_core_pricing()
+    candidates = [
+        {
+            "title": "11kV 630A 25kA VCB panel technical overview",
+            "url": "https://generic.example/product",
+            "snippet": "11kV 630A 25kA VCB panel technical information.",
+            "query": "11kV 630A 25kA VCB panel",
+        },
+        {
+            "title": "11kV 630A 25kA VCB panel tender award",
+            "url": "https://procurement.example/award.pdf",
+            "snippet": "BOQ unit price INR 402,543 each for 11kV 630A 25kA outgoing VCB panel.",
+            "query": "11kV 630A 25kA VCB panel tender award unit price",
+        },
+    ]
+
+    ranked = search.rank_candidates(candidates, "11kV 630A 25kA VCB panel price", [], [], "hv-equipment")
+
+    assert "procurement.example" in ranked[0]["url"]
 
 
 def test_adapter_allows_bounded_rendering_for_strong_hv_evidence_page():
