@@ -4,5 +4,6 @@ __pycache__/
 .DS_Store
 settings.json
 settings.json.before-*
+classification_rules.json
 prompts/
 instance/
