@@ -20,14 +20,6 @@ def install_category_profile_runtime(search) -> None:
     original_rank = search.rank_candidates
     original_collect_relevance = pricing_runtime._collect_relevance
 
-    def profile(value):
-        category = value if value in search.get_classification_rules()["categories"] if hasattr(search, "get_classification_rules") else False else None
-        if category is None:
-            category = search.pricing_category(value)
-        return search.pricing_profile(category) if hasattr(search, "pricing_profile") else category
-
-    # Keep this helper independent of classification_policy internals so the runtime
-    # remains usable when categories are edited without a restart.
     def category_profile_for(category_or_query):
         if hasattr(search, "pricing_profile"):
             try:
@@ -56,8 +48,6 @@ def install_category_profile_runtime(search) -> None:
     def rank_candidates(candidates, question, requirements=None, subquestions=None, category="general-product"):
         resolved_profile = category_profile_for(category)
         if resolved_profile == "hv-equipment" and category != "hv-equipment":
-            # Pass the inherited profile to the existing HV ranker so its strict gate
-            # and shared evidence bonus remain active.
             return original_rank(candidates, question, requirements, subquestions, "hv-equipment")
         return original_rank(candidates, question, requirements, subquestions, category)
 
@@ -71,9 +61,6 @@ def install_category_profile_runtime(search) -> None:
         relevant_urls, relevant_backends = set(), 0
         checker = getattr(search, "hv_candidate_relevance", None)
 
-        # Dynamic HV categories also get the local procurement index. The built-in
-        # HV loop already calls it directly; custom HV-derived categories otherwise
-        # would miss that source simply because their category ID is different.
         try:
             indexed = search.search_procurement(query, limit=max(6, int(max_results)))
         except Exception:
