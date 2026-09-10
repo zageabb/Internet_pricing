@@ -8,10 +8,16 @@ from research_core.ranking import cosine_similarity
 
 import browser_fetch
 import search
+from classification_policy import install_classification_policy
 from research_core_adapter import _hv_layered_queries, install_research_core_pricing
 
 
 TARGET = "11kV AIS 3200A switchboard, 25kA, 2 incomers 2000A, 8 feeders 630A"
+
+
+def setup_module():
+    install_research_core_pricing()
+    install_classification_policy(search)
 
 
 def test_research_core_dependency_is_v021():
@@ -19,7 +25,6 @@ def test_research_core_dependency_is_v021():
 
 
 def test_pricing_adapter_installs_shared_mechanics():
-    install_research_core_pricing()
     assert search.best_passages is best_passages
     assert search.cosine_similarity is cosine_similarity
     assert search.RESEARCH_CORE_VERSION == "0.2.1"
@@ -38,7 +43,6 @@ def test_hv_queries_split_complex_board_into_evidence_layers():
 
 
 def test_shared_evidence_score_promotes_commercial_result_before_fetch_shortlist():
-    install_research_core_pricing()
     candidates = [
         {
             "title": "11kV 630A 25kA VCB panel technical overview",
@@ -55,12 +59,10 @@ def test_shared_evidence_score_promotes_commercial_result_before_fetch_shortlist
     ]
 
     ranked = search.rank_candidates(candidates, "11kV 630A 25kA VCB panel price", [], [], "hv-equipment")
-
     assert "procurement.example" in ranked[0]["url"]
 
 
 def test_adapter_allows_bounded_rendering_for_strong_hv_evidence_page():
-    install_research_core_pricing()
     candidate = {
         "title": "11kV 630A 25kA VCB tender award",
         "url": "https://tenderkart.in/tender/example",
@@ -76,7 +78,6 @@ def test_adapter_allows_bounded_rendering_for_strong_hv_evidence_page():
 
 
 def test_hv_project_total_does_not_end_research():
-    install_research_core_pricing()
     evidence = [{
         "title": "Large substation project tender",
         "url": "https://eprocure.example/project",
@@ -87,19 +88,30 @@ def test_hv_project_total_does_not_end_research():
     assert search.has_sufficient_commercial_benchmark(evidence, TARGET, "hv-equipment") is False
 
 
-def test_hv_panel_award_can_end_research_and_is_role_labelled():
-    install_research_core_pricing()
-    evidence = [{
-        "source_id": 1,
+def _panel_award(source_id, domain, amount):
+    return {
+        "source_id": source_id,
         "title": "11kV 630A 25kA VCB panel tender award",
-        "url": "https://tenderkart.in/tender/example",
+        "url": f"https://{domain}/tender/example-{source_id}",
         "query": "11kV 630A 25kA VCB panel award price",
-        "text": "Seven 11kV 630A 25kA AIS panels. Winning bid INR 4,663,359 for the panel job.",
-        "claims": ["Winning bid INR 4,663,359"],
-        "passages": ["Seven 11kV 630A 25kA AIS panels. Winning bid INR 4,663,359 for the panel job."],
+        "text": f"Seven 11kV 630A 25kA AIS panels. Winning bid INR {amount} for the panel job.",
+        "claims": [f"Winning bid INR {amount}"],
+        "passages": [f"Seven 11kV 630A 25kA AIS panels. Winning bid INR {amount} for the panel job."],
         "published_at": "2026-09-10",
         "obtained_at": "2026-09-10",
-    }]
-    assert search.has_sufficient_commercial_benchmark(evidence, TARGET, "hv-equipment") is True
+    }
+
+
+def test_one_valid_hv_award_is_useful_but_below_default_stop_threshold():
+    evidence = [_panel_award(1, "tenderkart.in", "4,663,359")]
+    assert search.has_sufficient_commercial_benchmark(evidence, TARGET, "hv-equipment") is False
     ledger = search.evidence_ledger(evidence)
     assert "Evidence role: PRICE_EVIDENCE + SPEC_EVIDENCE" in ledger
+
+
+def test_two_independent_valid_hv_awards_can_end_research():
+    evidence = [
+        _panel_award(1, "tenderkart.in", "4,663,359"),
+        _panel_award(2, "volza.com", "4,850,000"),
+    ]
+    assert search.has_sufficient_commercial_benchmark(evidence, TARGET, "hv-equipment") is True
