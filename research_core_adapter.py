@@ -9,6 +9,8 @@ from research_core.ranking import cosine_similarity
 
 _ORIGINAL_PRICING_QUERIES = None
 _ORIGINAL_BROWSER_RENDER_RULE = None
+_ORIGINAL_BENCHMARK_CHECK = None
+_ORIGINAL_EVIDENCE_LEDGER = None
 
 
 def _compact(value: str) -> str:
@@ -42,6 +44,73 @@ def _nearest_current(value: str, words: tuple[str, ...]) -> str:
     return best[1] if best and best[0] < 80 else ""
 
 
+def _item_corpus(item: dict) -> str:
+    return "\n".join([
+        str(item.get("title") or ""),
+        str(item.get("text") or ""),
+        "\n".join(map(str, item.get("claims") or [])),
+        "\n".join(map(str, item.get("passages") or [])),
+    ])
+
+
+def _voltage_values_kv(value: str) -> list[float]:
+    values = []
+    for amount, unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(kV|V)\b", str(value or ""), re.I):
+        number = float(amount.replace(",", "."))
+        values.append(number if unit.lower() == "kv" else number / 1000.0)
+    return values
+
+
+def _evidence_role(browser_fetch, item: dict) -> str:
+    corpus = _item_corpus(item)
+    lower = corpus.lower()
+    roles = []
+    if browser_fetch.has_price_signal(corpus):
+        roles.append("PRICE_EVIDENCE")
+    spec_hits = len(re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:kV|kA|A|MVA|kVA|MW|kW)\b", corpus, re.I))
+    if spec_hits >= 2 or any(token in lower for token in ("iec ", "ieee ", "ais", "gis", "busbar", "short-time withstand")):
+        roles.append("SPEC_EVIDENCE")
+    if not roles and any(token in lower for token in ("supplier", "framework", "manufacturer", "distributor")):
+        roles.append("SUPPLIER_EVIDENCE")
+    return " + ".join(roles) if roles else "BACKGROUND_EVIDENCE"
+
+
+def _hv_commercial_benchmark(browser_fetch, item: dict, question: str) -> bool:
+    """Reject project totals and wrong voltage classes as sufficient HV price benchmarks."""
+    corpus = _item_corpus(item)
+    if not browser_fetch.has_price_signal(corpus):
+        return False
+    lower = corpus.lower()
+
+    target_voltages = _voltage_values_kv(question)
+    result_voltages = _voltage_values_kv(corpus)
+    if target_voltages and result_voltages and min(target_voltages) >= 3 and max(result_voltages) < 1:
+        return False
+
+    normalized = re.sub(r"\s+", "", lower)
+    target_ratings = [*_rating_tokens(question, "kV"), *_rating_tokens(question, "kA"), *_rating_tokens(question, "A")]
+    rating_hits = sum(1 for token in target_ratings if token.lower() in normalized)
+    subject_hit = any(token in lower for token in ("switchgear", "switchboard", "vcb", "panel", "ais", "gis"))
+
+    line_level_hints = (
+        "unit price", "unit rate", "per panel", "each panel", "line item", "boq", "bill of quantities",
+        "winning bid", "commercial offer", "quotation", "shipment", "transaction", "customs", "import", "export",
+    )
+    line_level = any(token in lower for token in line_level_hints)
+
+    unrelated_project_parts = sum(1 for token in (
+        "transformer", "dg set", "diesel generator", "lt panel", "low voltage board", "civil works", "cables",
+    ) if token in lower)
+    if unrelated_project_parts >= 2 and not line_level:
+        return False
+
+    host = (urlparse(str(item.get("url") or "")).hostname or "").lower().removeprefix("www.")
+    strong_transaction_hosts = {"tenderkart.in", "volza.com", "zauba.com"}
+    if host in strong_transaction_hosts and subject_hit and rating_hits >= 2:
+        return True
+    return subject_hit and rating_hits >= 2 and line_level
+
+
 def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
     """Create complementary HV searches instead of requiring every rating in every query."""
     base = _compact(query)
@@ -73,32 +142,17 @@ def _hv_layered_queries(query: str, planned: list[str]) -> list[str]:
         if value and value.lower() not in {item.lower() for item in queries}:
             queries.append(value[:300])
 
-    # Layer 1: broad award/BOQ evidence for the equipment class.
     add(f'"{voltage}" "{fault}" {insulation} {equipment} tender award BOQ unit price' if voltage and fault
         else f"{identity} tender award BOQ unit price")
-
-    # Layer 2: high-current incomer / transaction evidence.
     if incomer_current:
         add(f'"{voltage}" "{incomer_current}" "{fault}" incomer {equipment} import export customs price')
-
-    # Layer 3: feeder/outgoing panel line-item evidence.
     if feeder_current:
         add(f'"{voltage}" "{feeder_current}" "{fault}" feeder {breaker} tender award unit price')
-
-    # Layer 4: technical validation of the busbar/platform rating. This is allowed
-    # to be technical-only evidence; the final composer can pair it with price evidence.
     if busbar_current:
         add(f'"{voltage}" "{busbar_current}" busbar {insulation} {equipment} technical data')
-
-    # Layer 5/6: source-focused discovery based on sources that repeatedly expose
-    # award/transaction values in difficult HV searches. These are source names,
-    # not manufacturer restrictions.
     add(f"TenderKart {voltage} {fault} {breaker} award price")
     add(f"Volza {voltage} {incomer_current or busbar_current} {fault} {equipment} transaction")
 
-    # Preserve genuinely complementary planner searches. Unlike the old logic,
-    # they only need meaningful subject/rating overlap; they do not need every
-    # original anchor, quantity and rating repeated verbatim.
     base_terms = {term for term in re.findall(r"[a-z0-9][a-z0-9_.-]+", lower)
                   if term not in {"price", "pricing", "cost", "find", "current", "market", "for", "with", "and", "the"}}
     for item in planned:
@@ -159,7 +213,8 @@ def _install_hv_browser_rule(search) -> None:
 
 def install_research_core_pricing() -> None:
     """Adopt shared research mechanics while keeping pricing policy in this application."""
-    global _ORIGINAL_PRICING_QUERIES
+    global _ORIGINAL_PRICING_QUERIES, _ORIGINAL_BENCHMARK_CHECK, _ORIGINAL_EVIDENCE_LEDGER
+    import browser_fetch
     import search
 
     if getattr(search, "_research_core_v02_installed", False):
@@ -171,6 +226,10 @@ def install_research_core_pricing() -> None:
 
     if _ORIGINAL_PRICING_QUERIES is None:
         _ORIGINAL_PRICING_QUERIES = search.pricing_queries
+    if _ORIGINAL_BENCHMARK_CHECK is None:
+        _ORIGINAL_BENCHMARK_CHECK = search.has_sufficient_commercial_benchmark
+    if _ORIGINAL_EVIDENCE_LEDGER is None:
+        _ORIGINAL_EVIDENCE_LEDGER = search.evidence_ledger
 
     def pricing_queries_with_layers(query, planned, category=None):
         resolved_category = category or search.pricing_category(query)
@@ -178,6 +237,22 @@ def install_research_core_pricing() -> None:
             return search.clean_queries(_hv_layered_queries(query, list(planned or [])))
         return _ORIGINAL_PRICING_QUERIES(query, planned, resolved_category)
 
+    def sufficient_benchmark_with_scope(evidence, question, category):
+        if category != "hv-equipment":
+            return _ORIGINAL_BENCHMARK_CHECK(evidence, question, category)
+        return any(_hv_commercial_benchmark(browser_fetch, item, question) for item in evidence)
+
+    def evidence_ledger_with_roles(evidence):
+        ledger = _ORIGINAL_EVIDENCE_LEDGER(evidence)
+        blocks = ledger.split("\n\n---\n\n") if ledger else []
+        labelled = []
+        for index, block in enumerate(blocks):
+            role = _evidence_role(browser_fetch, evidence[index]) if index < len(evidence) else "BACKGROUND_EVIDENCE"
+            labelled.append(block.replace("Extracted claims:\n", f"Evidence role: {role}\nExtracted claims:\n", 1))
+        return "\n\n---\n\n".join(labelled)
+
     search.pricing_queries = pricing_queries_with_layers
+    search.has_sufficient_commercial_benchmark = sufficient_benchmark_with_scope
+    search.evidence_ledger = evidence_ledger_with_roles
     _install_hv_browser_rule(search)
     search._research_core_v02_installed = True
