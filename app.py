@@ -10,6 +10,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import search as search_module
 from browser_fetch import install_browser_fallback
 from document_extraction import clean_documents, document_context, extract_upload
+from pricing_recovery_policy import install_pricing_recovery_policy
 from pricing_runtime import install_hv_runtime
 from research_core_adapter import install_research_core_pricing
 from search import JOBS, list_models, ollama_json, start_job
@@ -19,6 +20,7 @@ from settings_store import PROMPTS, get_settings, save_prompts, save_settings
 install_browser_fallback()
 install_research_core_pricing()
 install_hv_runtime(search_module)
+install_pricing_recovery_policy(search_module)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30_000_000
