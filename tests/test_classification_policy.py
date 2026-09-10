@@ -1,11 +1,17 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import search
+import classification_policy
 from classification_coverage import install_classification_coverage_guard
-from classification_policy import benchmark_status, classify_query, install_classification_policy
+from classification_policy import (DEFAULT_RULES, benchmark_status, category_profile, classify_query,
+                                   get_category_order, get_classification_rules, install_classification_policy,
+                                   save_classification_rules)
+from power_transformer_policy import install_power_transformer_policy, power_transformer_queries
 
 
 X1_QUERY = "Lenovo ThinkPad X1 Carbon Gen 13 Aura Edition 32GB 1TB price"
+TRANSFORMER_QUERY = "132/33kV 90MVA power transformer with OLTC price"
 
 
 def test_x1_carbon_is_consumer_retail_not_general_product():
@@ -19,10 +25,81 @@ def test_11kv_switchgear_is_hv_equipment():
     assert category == "hv-equipment"
 
 
+def test_power_transformer_has_own_category_before_generic_hv():
+    category, reason = classify_query(TRANSFORMER_QUERY)
+    assert category == "power-transformers"
+    assert category_profile(category) == "hv-equipment"
+    assert "power transformer" in reason.lower() or "mva" in reason.lower()
+    assert get_category_order().index("power-transformers") < get_category_order().index("hv-equipment")
+
+
+def test_mva_transformer_pattern_routes_without_literal_power_transformer_phrase():
+    category, _ = classify_query("Need budget pricing for transformer 275/132kV 240MVA ONAN ONAF")
+    assert category == "power-transformers"
+
+
+def test_power_transformer_queries_are_transformer_specific_not_switchgear_queries():
+    joined = "\n".join(power_transformer_queries(TRANSFORMER_QUERY, []))
+    assert "power transformer" in joined.lower()
+    assert "90MVA" in joined
+    assert "132/33kV" in joined
+    assert "tender award" in joined.lower()
+    assert "Volza" in joined
+    assert "switchgear" not in joined.lower()
+
+
 def test_unknown_item_uses_general_product_catchall():
     category, reason = classify_query("Acme ZXQ-440 widget price")
     assert category == "general-product"
     assert "catch-all" in reason
+
+
+def test_dynamic_category_can_be_added_reordered_disabled_and_reloaded(tmp_path, monkeypatch):
+    rules_file = tmp_path / "classification_rules.json"
+    monkeypatch.setattr(classification_policy, "RULES_FILE", rules_file)
+    payload = deepcopy(DEFAULT_RULES)
+    payload["categories"]["network-equipment"] = {
+        "id": "network-equipment",
+        "label": "Network Equipment",
+        "enabled": True,
+        "order": 1,
+        "search_profile": "consumer-retail",
+        "keywords": ["firewall"],
+        "phrases": ["network switch"],
+        "patterns": [],
+        "min_priced_sources": 4,
+        "require_independent_domains": True,
+        "strategy": "Prioritise exact part numbers and current distributor prices.",
+        "evidence_notes": "Only matching models count.",
+        "stopping_notes": "Require four independent prices.",
+        "fallback_notes": "Model knowledge is last fallback.",
+        "future_notes": "Add port count and licence matching later.",
+    }
+    save_classification_rules(payload)
+    loaded = get_classification_rules()
+    assert "network-equipment" in loaded["categories"]
+    assert get_category_order(loaded)[0] == "network-equipment"
+    category, _ = classify_query("Fortinet firewall price", loaded)
+    assert category == "network-equipment"
+
+    loaded["categories"]["network-equipment"]["enabled"] = False
+    save_classification_rules(loaded)
+    reloaded = get_classification_rules()
+    assert reloaded["categories"]["network-equipment"]["enabled"] is False
+    category, _ = classify_query("Fortinet firewall price", reloaded)
+    assert category != "network-equipment"
+
+
+def test_v2_rules_migrate_power_transformers_once(tmp_path, monkeypatch):
+    rules_file = tmp_path / "classification_rules.json"
+    monkeypatch.setattr(classification_policy, "RULES_FILE", rules_file)
+    old = deepcopy(DEFAULT_RULES)
+    old["version"] = 2
+    old["categories"].pop("power-transformers")
+    rules_file.write_text(__import__("json").dumps(old))
+    loaded = get_classification_rules()
+    assert loaded["version"] == 3
+    assert "power-transformers" in loaded["categories"]
 
 
 def test_consumer_threshold_counts_only_priced_product_sources_not_fx_or_technical_pages():
@@ -88,6 +165,9 @@ def test_editable_hv_threshold_keeps_specialist_scope_validator():
         exact_priced_product_candidate=lambda *args, **kwargs: False,
         has_sufficient_commercial_benchmark=old_hv_benchmark,
         has_commercial_price=has_price,
+        pricing_queries=lambda query, planned, category=None: planned,
+        subject_relevant_candidates=lambda candidates, question, category=None: candidates,
+        rank_candidates=lambda candidates, question, requirements=None, subquestions=None, category="general-product": candidates,
     )
     install_classification_policy(fake)
 
@@ -103,6 +183,7 @@ def test_coverage_guard_overrides_llm_complete_until_threshold_is_met():
     fake = SimpleNamespace()
     fake.assess_coverage = lambda *args, **kwargs: {"complete": True, "covered": ["product"], "gaps": [], "queries": []}
     fake.pricing_category = lambda question: "consumer-retail"
+    fake.pricing_profile = lambda category: category
     fake.pricing_request = lambda question: True
     fake.implicit_product_pricing = lambda question: True
     fake.has_commercial_price = lambda evidence: True
