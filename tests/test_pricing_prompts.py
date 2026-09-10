@@ -1,36 +1,51 @@
 import unittest
 
-from search import (exact_priced_product_candidate, has_sufficient_commercial_benchmark,
-                    pack_specs, pricing_category, pricing_queries)
+import search
+from classification_policy import install_classification_policy
+from research_core_adapter import install_research_core_pricing
 from settings_store import DEFAULTS, PROMPTS
 
 
 class PricingPromptTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        install_research_core_pricing()
+        install_classification_policy(search)
+
     def test_litre_product_is_consumer_retail(self):
-        self.assertEqual(pricing_category("3 litre pepsi max price"), "consumer-retail")
+        self.assertEqual(search.pricing_category("3 litre pepsi max price"), "consumer-retail")
 
     def test_consumer_queries_prioritise_retail(self):
-        queries = pricing_queries("3 litre pepsi max price", [], "consumer-retail")
+        queries = search.pricing_queries("3 litre pepsi max price", [], "consumer-retail")
         self.assertTrue(any("supermarket" in query for query in queries))
         self.assertFalse(any("supplier distributor" in query for query in queries))
 
     def test_pack_specs_normalize_litre_spelling(self):
-        self.assertEqual(pack_specs("3 litre and 1.5 liters"), {"3l", "1.5l"})
+        self.assertEqual(search.pack_specs("3 litre and 1.5 liters"), {"3l", "1.5l"})
 
     def test_different_pack_price_is_not_exact(self):
         candidate = {"title": "Pepsi Max Tropical cans", "snippet": "24 x 0.33 litre, EUR 17.50"}
-        self.assertFalse(exact_priced_product_candidate(candidate, "3 litre Pepsi Max price", ""))
+        self.assertFalse(search.exact_priced_product_candidate(candidate, "3 litre Pepsi Max price", ""))
 
-    def test_exact_pack_price_is_sufficient_consumer_benchmark(self):
-        evidence = [{"title": "Pepsi Max 3L bottle", "text": "Pepsi Max 3 litre bottle £3.00",
-                     "snippet": "", "query": "Pepsi Max 3L price"}]
-        self.assertTrue(has_sufficient_commercial_benchmark(
+    def test_one_exact_pack_price_does_not_end_consumer_market_research(self):
+        evidence = [{"title": "Pepsi Max 3L bottle", "url": "https://shop1.example/pepsi",
+                     "text": "Pepsi Max 3 litre bottle £3.00", "snippet": "", "query": "Pepsi Max 3L price"}]
+        self.assertFalse(search.has_sufficient_commercial_benchmark(
+            evidence, "3 litre Pepsi Max price", "consumer-retail"))
+
+    def test_three_independent_exact_prices_end_consumer_market_research(self):
+        evidence = [
+            {"title": f"Pepsi Max 3L bottle {i}", "url": f"https://shop{i}.example/pepsi",
+             "text": f"Pepsi Max 3 litre bottle £{3 + i / 10:.2f}", "snippet": "", "query": "Pepsi Max 3L price"}
+            for i in range(1, 4)
+        ]
+        self.assertTrue(search.has_sufficient_commercial_benchmark(
             evidence, "3 litre Pepsi Max price", "consumer-retail"))
 
     def test_different_pack_price_does_not_end_consumer_research(self):
-        evidence = [{"title": "Pepsi Max Tropical cans", "text": "24 x 0.33 litre case EUR 17.50",
-                     "snippet": "", "query": "Pepsi Max price"}]
-        self.assertFalse(has_sufficient_commercial_benchmark(
+        evidence = [{"title": "Pepsi Max Tropical cans", "url": "https://shop.example/cans",
+                     "text": "24 x 0.33 litre case EUR 17.50", "snippet": "", "query": "Pepsi Max price"}]
+        self.assertFalse(search.has_sufficient_commercial_benchmark(
             evidence, "3 litre Pepsi Max price", "consumer-retail"))
 
     def test_pricing_defaults_request_deeper_research(self):
