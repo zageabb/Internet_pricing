@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 RULES_FILE = ROOT / "classification_rules.json"
 LOCK = threading.Lock()
 FALLBACK_CATEGORY = "general-product"
+RULES_VERSION = 3
 SEARCH_PROFILES = ("general-product", "consumer-retail", "industrial", "service-project", "hv-equipment")
 
 
@@ -37,8 +38,28 @@ def _default_rule(label, order, search_profile, keywords=None, phrases=None, pat
 
 
 DEFAULT_RULES = {
-    "version": 2,
+    "version": RULES_VERSION,
     "categories": {
+        "power-transformers": _default_rule(
+            "Power Transformers", 5, "hv-equipment",
+            keywords=["autotransformer", "gsu"],
+            phrases=[
+                "power transformer", "grid transformer", "generator step-up transformer",
+                "generator step up transformer", "gsu transformer", "step-up transformer",
+                "step up transformer", "step-down transformer", "step down transformer",
+                "large power transformer",
+            ],
+            patterns=[
+                r"\b\d+(?:[.,]\d+)?\s*mva\b.{0,100}\btransformer\b",
+                r"\btransformer\b.{0,100}\b\d+(?:[.,]\d+)?\s*mva\b",
+            ],
+            min_priced_sources=2,
+            strategy="Prioritise power-transformer tender awards, BOQs, purchase orders, framework values, OEM technical data and import/export transactions. Compare MVA rating, HV/LV voltage ratio, phases, frequency, impedance, vector group, cooling class, tap changer/OLTC, losses, accessories and supply-versus-installed scope before normalising prices.",
+            evidence_notes="Prefer transformer-level or line-item prices tied to MVA and voltage ratio. Technical-only OEM sources validate comparability but do not count toward the priced-source threshold. Treat transport, oil, bushings, radiators, fans/pumps, OLTC, marshalling kiosk, protection/control, installation and commissioning as separable scope where possible.",
+            stopping_notes="Require at least two independent qualifying priced transformer benchmarks by default. Do not let a complete substation/EPC project total count as a transformer price unless the transformer line item is separately identifiable.",
+            fallback_notes="Use web-backed transformer pricing first. Model knowledge may supplement accessory/package allowances and explain typical price drivers; a model-only headline transformer price remains the final fallback and must be clearly labelled.",
+            future_notes="Future structured fields: MVA, HV/LV/tertiary voltages, vector group, impedance, ONAN/ONAF/ODAF cooling, OLTC range/steps, no-load/load losses, BIL/insulation levels, noise, oil type, transport mass, accessories, spares, installation, testing and commissioning.",
+        ),
         "hv-equipment": _default_rule(
             "HV equipment", 10, "hv-equipment",
             keywords=["switchgear", "transformer", "disconnector", "isolator", "substation", "circuit-breaker", "breaker", "busbar", "bushing", "arrester", "earthing", "relay", "protection", "gis", "ais", "vcb"],
@@ -146,6 +167,11 @@ def _validated_rules(payload):
     if not isinstance(incoming_categories, dict):
         incoming_categories = {}
 
+    try:
+        incoming_version = int(payload.get("version", 1)) if isinstance(payload, dict) else 1
+    except (TypeError, ValueError):
+        incoming_version = 1
+
     categories = {}
     for index, (raw_id, incoming) in enumerate(incoming_categories.items()):
         if not isinstance(incoming, dict):
@@ -193,12 +219,17 @@ def _validated_rules(payload):
             default[key] = _clean_text(incoming.get(key), default.get(key, ""))
         categories[category_id] = default
 
-    # Migrate untouched v1/default installations and guarantee a permanent catch-all.
     if not categories:
         categories = deepcopy(DEFAULT_RULES["categories"])
-    for category_id, default in DEFAULT_RULES["categories"].items():
-        if category_id not in categories and int(payload.get("version", 1) if isinstance(payload, dict) else 1) < 2:
-            categories[category_id] = deepcopy(default)
+
+    # v3 introduced Power Transformers. Existing v1/v2 installations receive it once;
+    # after they save as v3 they are free to delete/disable/reconfigure it like any other category.
+    if incoming_version < RULES_VERSION and "power-transformers" not in categories:
+        categories["power-transformers"] = deepcopy(DEFAULT_RULES["categories"]["power-transformers"])
+    if incoming_version < 2:
+        for category_id, default in DEFAULT_RULES["categories"].items():
+            if category_id not in categories:
+                categories[category_id] = deepcopy(default)
 
     fallback = categories.get(FALLBACK_CATEGORY) or deepcopy(DEFAULT_RULES["categories"][FALLBACK_CATEGORY])
     fallback["enabled"] = True
@@ -209,7 +240,6 @@ def _validated_rules(payload):
     fallback["order"] = 1000
     categories[FALLBACK_CATEGORY] = fallback
 
-    # Normalize active category order while keeping the fallback last.
     ordered = sorted(
         ((int(rule.get("order", 500)), category_id) for category_id, rule in categories.items() if category_id != FALLBACK_CATEGORY),
         key=lambda item: (item[0], item[1]),
@@ -217,7 +247,7 @@ def _validated_rules(payload):
     for index, (_old_order, category_id) in enumerate(ordered, 1):
         categories[category_id]["order"] = index * 10
 
-    return {"version": 2, "categories": categories}
+    return {"version": RULES_VERSION, "categories": categories}
 
 
 def get_classification_rules():
@@ -417,8 +447,6 @@ def install_classification_policy(search):
         profile = pricing_profile(resolved)
         qualifier = None
         if profile == "hv-equipment":
-            # Preserve the specialist HV rating/scope/project-total validator underneath
-            # the editable minimum-source threshold, including custom HV-derived categories.
             qualifier = lambda item: original_benchmark([item], question, "hv-equipment")
         return benchmark_status(search, evidence, question, resolved, qualifier)
 
