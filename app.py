@@ -15,6 +15,7 @@ from classification_policy import (classification_report, get_category_order, ge
                                    install_classification_policy, reset_classification_rules,
                                    save_classification_rules)
 from document_extraction import clean_documents, document_context, extract_upload
+from hybrid_classification import install_hybrid_classification
 from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
 from pricing_runtime import install_hv_runtime
@@ -31,6 +32,8 @@ install_category_profile_runtime(search_module)
 install_power_transformer_policy(search_module)
 install_pricing_recovery_policy(search_module)
 install_classification_coverage_guard(search_module)
+# Keep this last: semantic classification must happen before all profile/runtime routers.
+install_hybrid_classification(search_module)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30_000_000
@@ -115,11 +118,23 @@ def classifications_reset():
 
 @app.post("/api/classifications/test")
 def classifications_test():
+    """Deterministic classifier test retained for diagnostics and regression checks."""
     payload = request.get_json(silent=True) or {}
     query = str(payload.get("query") or "").strip()[:20_000]
     if not query:
         return jsonify(ok=False, message="Enter a request to classify."), 400
     return jsonify(ok=True, result=classification_report(query))
+
+
+@app.post("/api/classifications/test-hybrid")
+def classifications_test_hybrid():
+    """Run the same semantic-first classifier used by live search jobs."""
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "").strip()[:20_000]
+    if not query:
+        return jsonify(ok=False, message="Enter a request to classify."), 400
+    requested_model = str(payload.get("model") or "").strip()[:200]
+    return jsonify(ok=True, result=search_module.hybrid_classification_report(query, requested_model))
 
 
 @app.post("/api/search")
