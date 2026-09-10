@@ -9,6 +9,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import search as search_module
 from browser_fetch import install_browser_fallback
+from category_profile_runtime import install_category_profile_runtime
 from classification_coverage import install_classification_coverage_guard
 from classification_policy import (classification_report, get_category_order, get_classification_rules,
                                    install_classification_policy, reset_classification_rules,
@@ -25,6 +26,7 @@ install_browser_fallback()
 install_research_core_pricing()
 install_classification_policy(search_module)
 install_hv_runtime(search_module)
+install_category_profile_runtime(search_module)
 install_pricing_recovery_policy(search_module)
 install_classification_coverage_guard(search_module)
 
