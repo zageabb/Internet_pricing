@@ -161,8 +161,8 @@ async function testClassification() {
     return;
   }
   target.classList.remove("hidden");
-  target.innerHTML = "<strong>Classifying…</strong>";
-  const response = await fetch("/api/classifications/test", {
+  target.innerHTML = "<strong>Running semantic classification…</strong>";
+  const response = await fetch("/api/classifications/test-hybrid", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({query}),
@@ -173,16 +173,25 @@ async function testClassification() {
     return;
   }
   const result = data.result;
+  const method = result.method === "llm" ? "LLM semantic choice" : "Deterministic fallback";
+  const confidence = result.confidence == null ? "No LLM confidence" : `Confidence ${Number(result.confidence).toFixed(2)} / threshold ${Number(result.confidence_threshold).toFixed(2)}`;
+  const baseline = result.deterministic_label || result.deterministic_category || "Unknown";
+  const proposal = result.llm_proposal || {};
+  const proposalText = result.method === "llm"
+    ? `Deterministic baseline: ${escapeHtml(baseline)}`
+    : `LLM proposal: ${escapeHtml(proposal.category || "unavailable")} · ${escapeHtml(proposal.reason || proposal.error || "no usable proposal")}`;
   target.innerHTML = `
-    <span class="eyebrow">Selected category</span>
+    <span class="eyebrow">Selected category · ${escapeHtml(method)}</span>
     <strong>${escapeHtml(result.label)} <code>${escapeHtml(result.category)}</code></strong>
     <p>${escapeHtml(result.reason)}</p>
     <div class="result-meta">
+      <span>${escapeHtml(confidence)}</span>
       <span>Priority ${escapeHtml(result.priority)}</span>
       <span>Profile: ${escapeHtml(result.search_profile)}</span>
       <span>${result.min_priced_sources} priced sources required</span>
       <span>${result.require_independent_domains ? "Independent domains required" : "Duplicate domains allowed"}</span>
     </div>
+    <p style="margin-top:10px"><b>Cross-check:</b> ${proposalText}</p>
     <p style="margin-top:10px"><b>Search strategy:</b> ${escapeHtml(result.strategy)}</p>`;
 }
 
