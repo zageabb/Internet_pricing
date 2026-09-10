@@ -1,29 +1,29 @@
 from __future__ import annotations
 
 
-def category_followup_queries(question: str, category: str) -> list[str]:
+def category_followup_queries(question: str, profile: str) -> list[str]:
     base = " ".join(str(question or "").split())[:260]
     if not base:
         return []
-    if category == "consumer-retail":
+    if profile == "consumer-retail":
         values = [
             f'"{base}" retailer price',
             f'"{base}" buy price in stock',
             f'"{base}" supplier price',
         ]
-    elif category == "general-product":
+    elif profile == "general-product":
         values = [
             f'"{base}" supplier price',
             f'"{base}" distributor price',
             f'"{base}" catalogue price',
         ]
-    elif category == "industrial":
+    elif profile == "industrial":
         values = [
             f'"{base}" distributor price',
             f'"{base}" quotation price',
             f'"{base}" tender award price',
         ]
-    elif category == "service-project":
+    elif profile == "service-project":
         values = [
             f'"{base}" schedule of rates',
             f'"{base}" day rate price',
@@ -46,8 +46,9 @@ def install_classification_coverage_guard(search) -> None:
             prompts, settings, model, rewritten_question, requirements, subquestions, queries, evidence
         )
         category = search.pricing_category(rewritten_question)
-        # HV has its own stronger deterministic recovery policy.
-        if category == "hv-equipment":
+        profile = search.pricing_profile(category) if hasattr(search, "pricing_profile") else category
+        # HV-profile categories have their own stronger deterministic recovery policy.
+        if profile == "hv-equipment":
             return result
 
         is_pricing = (
@@ -72,7 +73,7 @@ def install_classification_coverage_guard(search) -> None:
         result["complete"] = False
         result["gaps"] = [gap] + [item for item in existing_gaps if item.casefold() != gap.casefold()]
 
-        deterministic = category_followup_queries(rewritten_question, category)
+        deterministic = category_followup_queries(rewritten_question, profile)
         llm_queries = search.clean_queries(result.get("queries", []))
         result["queries"] = search.clean_queries(deterministic + llm_queries)[:4]
         return result
