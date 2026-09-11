@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 
 
@@ -11,6 +12,12 @@ LEVEL_LABELS = {
     "adjacent": "adjacent-family comparator",
     "broad": "broad family benchmark",
 }
+LEVEL_PENALTIES = {"canonical": 0.0, "near": 0.45, "adjacent": 0.9, "broad": 1.35}
+PRICE_TEXT_RE = re.compile(
+    r"(?:GBP|USD|EUR|CAD|AUD|INR|JPY|CNY|CHF|£|€|\$|₹|¥)\s*\d[\d,.]*|"
+    r"\d[\d,.]*\s*(?:GBP|USD|EUR|CAD|AUD|INR|JPY|CNY|CHF)",
+    re.I,
+)
 
 
 def _compact(value: str) -> str:
@@ -223,16 +230,26 @@ def _llm_review_expanded_source(search, prompts, settings, model, query, title, 
     return ("useful", reason, claims) if verdict == "useful" else ("unusable", reason, [])
 
 
+def _has_priced_expansion_text(value: str) -> bool:
+    text = str(value or "")
+    labels = tuple(LEVEL_LABELS.values())
+    return any(label in text for label in labels) and bool(PRICE_TEXT_RE.search(text))
+
+
 def install_generic_expansion_policy(search) -> None:
     if getattr(search, "_generic_expansion_policy_installed", False):
         return
 
     original_pricing_queries = search.pricing_queries
+    original_subject_filter = search.subject_relevant_candidates
+    original_rank = search.rank_candidates
     original_assess_coverage = search.assess_coverage
     original_analyse_source = search.analyse_source
     original_evidence_ledger = search.evidence_ledger
     original_benchmark_status = search.benchmark_status
     original_has_sufficient = search.has_sufficient_commercial_benchmark
+    original_review_answer = search.review_answer
+    original_verify_citations = search.verify_citations
 
     def pricing_queries(query, planned, category=None):
         resolved = category or search.pricing_category(query)
@@ -240,9 +257,40 @@ def install_generic_expansion_policy(search) -> None:
         original = _original_request(search, query)
         prepare_expansion_plan(search, original, category=resolved)
         canonical = [row["query"] for row in _state_for(original).plan.get("canonical", [])][:1]
-        # Do not drop category-specific exact searches merely to make room for an alias.
-        # Existing deterministic searches are authoritative; expansion is additive.
         return search.clean_queries(base + canonical)[:6]
+
+    def subject_relevant_candidates(candidates, question, category=None):
+        accepted = list(original_subject_filter(candidates, question, category))
+        accepted_urls = {str(item.get("url") or item.get("href") or "") for item in accepted}
+        for candidate in candidates:
+            if not _relation_for(candidate.get("query", "")):
+                continue
+            url = str(candidate.get("url") or candidate.get("href") or "")
+            if url in accepted_urls:
+                continue
+            item = dict(candidate)
+            item["expansion_candidate"] = True
+            accepted.append(item)
+            accepted_urls.add(url)
+        return accepted
+
+    def rank_candidates(candidates, question, requirements=None, subquestions=None, category="general-product"):
+        expanded, normal = [], []
+        for candidate in candidates:
+            relation = _relation_for(candidate.get("query", ""))
+            (expanded if relation else normal).append(candidate)
+        ranked = list(original_rank(normal, question, requirements, subquestions, category)) if normal else []
+        if expanded:
+            expanded_ranked = list(original_rank(expanded, question, requirements, subquestions, "general-product"))
+            for item in expanded_ranked:
+                relation = _relation_for(item.get("query", "")) or {}
+                level = relation.get("level", "broad")
+                item["expansion_level"] = level
+                item["expansion_relation"] = relation.get("label", LEVEL_LABELS.get(level, level))
+                item["score"] = round(float(item.get("score") or 0.0) - LEVEL_PENALTIES.get(level, 1.35), 3)
+            ranked.extend(expanded_ranked)
+        ranked.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("title") or "").lower()))
+        return search.diversify(ranked)
 
     def benchmark_status(evidence, question, category=None):
         return original_benchmark_status(_non_comparator_evidence(evidence), question, category)
@@ -293,6 +341,67 @@ def install_generic_expansion_policy(search) -> None:
             enriched.append(row)
         return original_evidence_ledger(enriched)
 
+    def review_answer(job_id, prompts, settings, model, query, rewritten_question, requirements, subquestions,
+                      answer, evidence, allow_indicative=False):
+        if allow_indicative and _has_priced_expansion_text(str(evidence)):
+            protected = list(requirements or []) + [
+                "Useful priced comparator evidence was retained. The final answer must let the evidence determine whether each hit is useful, clearly distinguish exact matches from canonical-name hypotheses and near/adjacent/broad comparators, and must not state that no usable price exists merely because the exact benchmark threshold was not met. Do not present comparator pricing as an exact observed price for the requested item."
+            ]
+            return original_review_answer(
+                job_id, prompts, settings, model, query, rewritten_question, protected,
+                subquestions, answer, evidence, allow_indicative=False,
+            )
+        return original_review_answer(
+            job_id, prompts, settings, model, query, rewritten_question, requirements,
+            subquestions, answer, evidence, allow_indicative=allow_indicative,
+        )
+
+    def verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence,
+                         allow_indicative=False):
+        if allow_indicative and _has_priced_expansion_text(evidence_text):
+            allow_indicative = False
+        return original_verify_citations(
+            job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence,
+            allow_indicative=allow_indicative,
+        )
+
+    # The HV runtime has two pre-LLM filters. Expanded candidates are deliberately
+    # allowed through those filters so the source-review LLM, not an exact-rating gate,
+    # decides whether the comparator is useful. Exact/non-expanded candidates retain
+    # all existing deterministic HV safeguards.
+    try:
+        import pricing_runtime
+        original_collect_relevance = pricing_runtime._collect_relevance
+
+        def collect_relevance(search_module, candidates, question, category):
+            expanded = [item for item in candidates if _relation_for(item.get("query", ""))]
+            normal = [item for item in candidates if not _relation_for(item.get("query", ""))]
+            accepted, rejected = original_collect_relevance(search_module, normal, question, category)
+            accepted = list(accepted)
+            for candidate in expanded:
+                item = dict(candidate)
+                item["subject_relevance_score"] = 0.15
+                item["expansion_candidate"] = True
+                accepted.append(item)
+            return accepted, rejected
+
+        def safe_hv_followups(search_module, values, question):
+            rows = []
+            checker = getattr(search_module, "hv_query_relevant", None)
+            for value in search_module.clean_queries(values)[:6]:
+                if _relation_for(value):
+                    rows.append(value)
+                    continue
+                if callable(checker) and not checker(value, question):
+                    continue
+                rows.append(value)
+            return rows
+
+        pricing_runtime._collect_relevance = collect_relevance
+        pricing_runtime._safe_hv_followups = safe_hv_followups
+    except Exception:
+        pass
+
     search.prepare_expansion_plan = lambda query, model="", settings=None, category=None: prepare_expansion_plan(
         search, query, model=model, settings=settings, category=category
     )
@@ -300,9 +409,13 @@ def install_generic_expansion_policy(search) -> None:
     search.query_expansion_relation = _relation_for
     search.has_expansion_evidence = lambda evidence: any(_relation_for(item.get("query", "")) for item in (evidence or []))
     search.pricing_queries = pricing_queries
+    search.subject_relevant_candidates = subject_relevant_candidates
+    search.rank_candidates = rank_candidates
     search.benchmark_status = benchmark_status
     search.has_sufficient_commercial_benchmark = has_sufficient_commercial_benchmark
     search.assess_coverage = assess_coverage
     search.analyse_source = analyse_source
     search.evidence_ledger = evidence_ledger
+    search.review_answer = review_answer
+    search.verify_citations = verify_citations
     search._generic_expansion_policy_installed = True
