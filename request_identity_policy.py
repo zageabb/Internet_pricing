@@ -24,6 +24,11 @@ PRICE_RE = re.compile(
     re.I,
 )
 SAFE_FALLBACK_MARKER = "### Exact product price not verified"
+GROCERY_TERMS = {
+    "bottle", "bottles", "can", "cans", "pack", "drink", "drinks", "beverage", "beverages",
+    "cola", "soda", "grocery", "groceries", "food", "snack", "snacks", "litre", "litres",
+    "liter", "liters", "ml",
+}
 
 
 def _compact(value: str) -> str:
@@ -110,14 +115,19 @@ def _equipment_request(query: str) -> str:
     return equipment.strip(" ,;:-")
 
 
+def _is_grocery_request(search, query: str) -> bool:
+    return bool(search.pack_specs(query) or (search.terms(query) & GROCERY_TERMS))
+
+
 def consumer_initial_queries(search, query: str) -> list[str]:
     # Round one keeps the complete user-supplied product and requested attributes.
     # Only later rounds relax RAM/storage/etc.; the model identity is never relaxed.
     equipment = _equipment_request(query)
+    third = f"{equipment} supermarket price" if _is_grocery_request(search, query) else f"{equipment} supplier price"
     values = [
         f'"{equipment}" price' if equipment else "",
         f"{equipment} retailer price" if equipment else "",
-        f"{equipment} supplier price" if equipment else "",
+        third if equipment else "",
     ]
     return search.clean_queries([item for item in values if item])
 
@@ -206,9 +216,14 @@ def install_request_identity_policy(search) -> None:
         if not is_consumer:
             return original_exact_price(candidate, question, content)
         original = _original_request(search, question)
-        if _visible_identity_price(search, candidate, original, content):
+        # Preserve the mature pack/size/spec matching in the original deterministic
+        # consumer validator. The semantic identity fallback is only for products that
+        # the legacy detector cannot recognise from a literal device-class word.
+        if original_exact_price(candidate, original, content):
             return True
-        return False
+        if search.pack_specs(original):
+            return False
+        return _visible_identity_price(search, candidate, original, content)
 
     def analyse_source(prompts, settings, model, query, title, url, content):
         is_consumer, _category = _consumer_category(search, query)
