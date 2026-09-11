@@ -50,6 +50,11 @@ def _consumer_category(search, value: str = "") -> tuple[bool, str]:
     return profile == "consumer-retail", category
 
 
+def _expansion_relation(search, value: str):
+    getter = getattr(search, "query_expansion_relation", None)
+    return getter(value) if callable(getter) else None
+
+
 def _identity_tokens(search, query: str) -> list[str]:
     rows, seen = [], set()
     for token in re.findall(r"[a-z0-9][a-z0-9.+_-]*", str(query or "").lower()):
@@ -121,7 +126,7 @@ def _is_grocery_request(search, query: str) -> bool:
 
 def consumer_initial_queries(search, query: str) -> list[str]:
     # Round one keeps the complete user-supplied product and requested attributes.
-    # Only later rounds relax RAM/storage/etc.; the model identity is never relaxed.
+    # Generic expansion may add one tagged canonical-name hypothesis afterwards.
     equipment = _equipment_request(query)
     third = f"{equipment} supermarket price" if _is_grocery_request(search, query) else f"{equipment} supplier price"
     values = [
@@ -167,7 +172,7 @@ def _safe_unverified_answer(search, query: str, category: str, *, no_evidence: b
 
 
 def install_request_identity_policy(search) -> None:
-    """Keep consumer product identity invariant while leaving semantic classification to the LLM."""
+    """Keep exact consumer identity authoritative while allowing tagged expansion/comparators to be reviewed."""
     if getattr(search, "_request_identity_policy_installed", False):
         return
 
@@ -186,8 +191,6 @@ def install_request_identity_policy(search) -> None:
         if profile != "consumer-retail":
             return original_pricing_queries(query, planned, resolved)
         original = _original_request(search, query)
-        # Do not let an LLM-planned alias compete in round one. Deterministic searches
-        # preserve the exact requested product and requested configuration.
         return consumer_initial_queries(search, original)[:3]
 
     def subject_relevant_candidates(candidates, question, category=None):
@@ -198,6 +201,12 @@ def install_request_identity_policy(search) -> None:
         original = _original_request(search, question)
         accepted = []
         for candidate in candidates:
+            relation = _expansion_relation(search, candidate.get("query", ""))
+            if relation:
+                item = dict(candidate)
+                item["identity_match_reason"] = f"Tagged {relation.get('label', 'search expansion')} candidate; defer usefulness to source review"
+                accepted.append(item)
+                continue
             matched, reason = _candidate_identity_match(search, candidate, original)
             if matched:
                 item = dict(candidate)
@@ -216,11 +225,16 @@ def install_request_identity_policy(search) -> None:
         if not is_consumer:
             return original_exact_price(candidate, question, content)
         original = _original_request(search, question)
-        # Preserve the mature pack/size/spec matching in the original deterministic
-        # consumer validator. The semantic identity fallback is only for products that
-        # the legacy detector cannot recognise from a literal device-class word.
+        relation = _expansion_relation(search, candidate.get("query", ""))
+        if relation and relation.get("level") in {"near", "adjacent", "broad"}:
+            return False
+        # Canonical expansion may still be exact if the requested identity tokens/spec
+        # are present. Otherwise it must go through LLM source review rather than being
+        # automatically promoted as an exact retailer hit.
         if original_exact_price(candidate, original, content):
             return True
+        if relation:
+            return False
         if search.pack_specs(original):
             return False
         return _visible_identity_price(search, candidate, original, content)
@@ -228,6 +242,9 @@ def install_request_identity_policy(search) -> None:
     def analyse_source(prompts, settings, model, query, title, url, content):
         is_consumer, _category = _consumer_category(search, query)
         if not is_consumer:
+            return original_analyse_source(prompts, settings, model, query, title, url, content)
+        relation = _expansion_relation(search, query)
+        if relation:
             return original_analyse_source(prompts, settings, model, query, title, url, content)
         original = _original_request(search, query)
         matched, reason = _candidate_identity_match(
@@ -279,14 +296,20 @@ def install_request_identity_policy(search) -> None:
             "no readable web evidence", "knowledge fallback", "web research returned no",
             "no usable evidence", "0 retained", "no relevant pricing evidence",
         ))
-        if allow_indicative or no_evidence:
+        if no_evidence:
             search.event(
                 job_id, "reasoning", "returned", "Protected exact product identity",
-                "No model-generated product substitution, launch date, specification or price was allowed without qualifying web evidence",
+                "No model-generated product substitution, launch date, specification or price was allowed without web evidence",
             )
-            return _safe_unverified_answer(search, original, category, no_evidence=no_evidence)
+            return _safe_unverified_answer(search, original, category, no_evidence=True)
+
+        protected_requirements = list(requirements or [])
+        if allow_indicative:
+            protected_requirements.append(
+                "Exact requested product identity/price is not yet verified. Canonical-name and comparator-ladder sources may be discussed only according to what their citations support; do not infer an exact launch date, specification or headline price from model knowledge or from a comparator."
+            )
         return original_review_answer(
-            job_id, prompts, settings, model, original, original, requirements,
+            job_id, prompts, settings, model, original, original, protected_requirements,
             subquestions, answer, evidence, allow_indicative=False,
         )
 
