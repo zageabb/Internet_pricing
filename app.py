@@ -15,6 +15,7 @@ from classification_policy import (classification_report, get_category_order, ge
                                    install_classification_policy, reset_classification_rules,
                                    save_classification_rules)
 from document_extraction import clean_documents, document_context, extract_upload
+from generic_expansion_policy import install_generic_expansion_policy
 from hybrid_classification import install_hybrid_classification
 from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
@@ -34,6 +35,9 @@ install_power_transformer_policy(search_module)
 install_pricing_recovery_policy(search_module)
 install_classification_coverage_guard(search_module)
 install_request_identity_policy(search_module)
+# Generic expansion is deliberately outside category-specific guards: it broadens
+# discovery for every pricing category while leaving exact benchmark thresholds intact.
+install_generic_expansion_policy(search_module)
 # Keep this last: semantic classification must happen before all profile/runtime routers.
 install_hybrid_classification(search_module)
 
@@ -53,220 +57,161 @@ Rules:
 - Preserve exact product/equipment names, model or part numbers, quantities, ratings, dimensions, standards, interfaces, required features, delivery location, market/country, currency, scope, exclusions and other commercial constraints when present.
 - Ignore signatures, legal boilerplate, email footers, repeated headings and unrelated administration text unless commercially relevant.
 - Do not invent missing specifications, brands, quantities or standards.
-- If the user's instruction is specific, combine it with the document facts and preserve the user's intent.
-- If there is no meaningful user instruction, infer a normal Internet Pricing task from the document: identify what is required and find current matching products/suppliers and defensible pricing or commercial benchmarks.
-- Write `search_request` as if the user had typed it directly. Do not mention that you summarised a file and do not paste the document verbatim.
-- Keep `search_request` compact enough for web search planning while retaining discriminating specifications.
-
-User instruction:
-{{user_query}}
-
-Uploaded document material:
-{{documents}}
+- If the document is ambiguous, write the search request to reflect the ambiguity instead of guessing.
 """
-
-
-def _document_search_brief(user_query, documents, requested_model):
-    settings = get_settings()
-    model = requested_model or settings["model"]
-    material = document_context(documents)
-    if len(material) > 55_000:
-        material = material[:45_000] + "\n\n[...middle content omitted for briefing...]\n\n" + material[-10_000:]
-    prompt = (DOCUMENT_BRIEF_PROMPT
-              .replace("{{user_query}}", user_query or "No additional instruction; derive the normal pricing/search request from the document.")
-              .replace("{{documents}}", material))
-    parsed = ollama_json(settings["ollama_url"], model, prompt)
-    search_request = str(parsed.get("search_request") or "").strip()
-    if not search_request:
-        raise ValueError("The model did not produce a usable document-derived search request.")
-    return search_request[:12_000], {
-        "summary": str(parsed.get("summary") or "").strip()[:4_000],
-        "requirements": [str(item).strip()[:1_000] for item in (parsed.get("requirements") or []) if str(item).strip()][:12],
-    }
 
 
 @app.get("/")
 def index():
-    return render_template("index.html", settings=get_settings())
+    settings = get_settings()
+    return render_template("index.html", settings=settings)
 
 
 @app.get("/settings")
 def settings_page():
-    return render_template("settings.html", settings=get_settings(), prompts=PROMPTS.load())
+    settings = get_settings()
+    prompts = PROMPTS.load()
+    return render_template("settings.html", settings=settings, prompts=prompts)
+
+
+@app.post("/api/settings")
+def settings_save():
+    payload = request.get_json(force=True, silent=True) or {}
+    save_settings(payload.get("settings") or {})
+    if isinstance(payload.get("prompts"), dict):
+        save_prompts(payload["prompts"])
+    return jsonify({"ok": True, "settings": get_settings(), "prompts": PROMPTS.load()})
 
 
 @app.get("/classifications")
 def classifications_page():
-    rules = get_classification_rules()
-    return render_template("classifications.html", rules=rules, category_order=get_category_order(rules))
+    return render_template("classifications.html", rules=get_classification_rules())
+
+
+@app.get("/api/classifications")
+def classifications_get():
+    return jsonify(get_classification_rules())
 
 
 @app.post("/api/classifications")
 def classifications_save():
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload.get("categories"), dict):
-        return jsonify(ok=False, message="Classification categories were not supplied."), 400
-    rules = save_classification_rules(payload)
-    return jsonify(ok=True, rules=rules, category_order=get_category_order(rules),
-                   message="Classification and stopping rules saved.")
+    payload = request.get_json(force=True, silent=True) or {}
+    return jsonify(save_classification_rules(payload))
 
 
 @app.post("/api/classifications/reset")
 def classifications_reset():
-    rules = reset_classification_rules()
-    return jsonify(ok=True, rules=rules, category_order=get_category_order(rules),
-                   message="Classification rules reset to defaults.")
+    return jsonify(reset_classification_rules())
 
 
 @app.post("/api/classifications/test")
 def classifications_test():
-    payload = request.get_json(silent=True) or {}
-    query = str(payload.get("query") or "").strip()[:20_000]
-    if not query:
-        return jsonify(ok=False, message="Enter a request to classify."), 400
-    model = str(payload.get("model") or "")[:200]
-    reporter = getattr(search_module, "hybrid_classification_report", None)
-    if callable(reporter):
-        return jsonify(ok=True, result=reporter(query, model))
-    return jsonify(ok=True, result=classification_report(query))
+    payload = request.get_json(force=True, silent=True) or {}
+    query = str(payload.get("query") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    report = search_module.hybrid_classification_report(query, model) if hasattr(search_module, "hybrid_classification_report") else classification_report(query)
+    return jsonify(report)
 
 
-@app.post("/api/classifications/test/deterministic")
+@app.post("/api/classifications/test-deterministic")
 def classifications_test_deterministic():
-    payload = request.get_json(silent=True) or {}
-    query = str(payload.get("query") or "").strip()[:20_000]
-    if not query:
-        return jsonify(ok=False, message="Enter a request to classify."), 400
-    return jsonify(ok=True, result=classification_report(query))
-
-
-@app.post("/api/search")
-def search():
-    if request.files:
-        payload = request.form.to_dict()
-        try:
-            payload["history"] = json.loads(payload.get("history") or "[]")
-            payload["documents"] = json.loads(payload.get("documents") or "[]")
-        except json.JSONDecodeError:
-            return jsonify(ok=False, message="The conversation document context was invalid."), 400
-    else:
-        payload = request.get_json(silent=True) or {}
-
-    raw_query = str(payload.get("query") or "").strip()[:20_000]
-    history = []
-    for item in (payload.get("history") or [])[-30:]:
-        if isinstance(item, dict) and item.get("role") in {"user", "assistant"}:
-            history.append({"role": item["role"], "content": str(item.get("content") or "")[:12_000]})
-
-    documents = clean_documents(payload.get("documents") or [])
-    for upload in request.files.getlist("documents"):
-        if not upload.filename:
-            continue
-        try:
-            documents.append(extract_upload(upload))
-            documents = clean_documents(documents)
-        except (ValueError, ImportError) as exc:
-            return jsonify(ok=False, message=f"Could not process {upload.filename}: {exc}"), 400
-        except Exception as exc:
-            return jsonify(ok=False, message=f"Could not read {upload.filename}: {exc}"), 400
-
-    if not raw_query and not documents:
-        return jsonify(ok=False, message="Enter a research question or attach a document before searching."), 400
-
-    user_query = "" if documents and raw_query.casefold() == LEGACY_ATTACHMENT_QUERY.casefold() else raw_query
-    requested_model = str(payload.get("model") or "")[:200]
-    document_brief = None
-    brief_meta = None
-    effective_query = user_query
-    if documents:
-        try:
-            effective_query, brief_meta = _document_search_brief(user_query, documents, requested_model)
-            document_brief = effective_query
-        except Exception as exc:
-            return jsonify(ok=False, message=f"Could not turn the attached document into a search request: {exc}"), 502
-
-    if not effective_query:
-        return jsonify(ok=False, message="Could not determine what to research from the request or attachment."), 400
-
-    allowed_only = str(payload.get("allowed_only") or "").lower() in {"1", "true", "yes", "on"}
-    job = start_job(app, effective_query, history, requested_model, allowed_only, "")
-    return jsonify(ok=True, job=job, documents=documents,
-                   document_names=[item["name"] for item in documents],
-                   document_brief=document_brief, document_brief_meta=brief_meta), 202
-
-
-@app.get("/api/search/<job_id>")
-def search_status(job_id: str):
-    job = JOBS.get(job_id)
-    if job is None:
-        return jsonify(ok=False, message="Search job not found."), 404
-    return jsonify(ok=True, job=job)
+    payload = request.get_json(force=True, silent=True) or {}
+    return jsonify(classification_report(str(payload.get("query") or "").strip()))
 
 
 @app.get("/api/models")
 def models():
     try:
-        return jsonify(ok=True, models=list_models())
+        return jsonify({"models": list_models()})
     except Exception as exc:
-        configured = get_settings()["model"]
-        return jsonify(ok=True, models=[configured] if configured else [], warning=str(exc))
+        return jsonify({"models": [], "error": str(exc)}), 502
 
 
-@app.post("/api/settings")
-def settings():
-    payload = request.get_json(silent=True) or {}
-    return jsonify(ok=True, settings=save_settings(payload), message="Search settings saved.")
+@app.post("/api/document-brief")
+def document_brief():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files uploaded"}), 400
+    extracted = []
+    for upload in files:
+        if not upload or not upload.filename:
+            continue
+        extracted.extend(extract_upload(upload))
+    if not extracted:
+        return jsonify({"error": "No readable document content was extracted"}), 400
+    context = document_context(extracted)
+    settings = get_settings()
+    model = str(request.form.get("model") or settings.get("model") or "")
+    prompt = DOCUMENT_BRIEF_PROMPT + "\n\nDOCUMENT MATERIAL:\n" + context[:80_000]
+    try:
+        result = ollama_json(settings["ollama_url"], model, prompt)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({
+        "search_request": str(result.get("search_request") or "").strip(),
+        "summary": str(result.get("summary") or "").strip(),
+        "requirements": clean_documents(result.get("requirements") or []),
+        "documents": extracted,
+    })
 
 
-@app.post("/api/prompts")
-def prompts():
-    payload = request.get_json(silent=True) or {}
-    values = payload.get("prompts")
-    if not isinstance(values, dict):
-        return jsonify(ok=False, message="No prompts were supplied."), 400
-    save_prompts(values)
-    return jsonify(ok=True, message="Search instructions saved.")
-
-
-@app.post("/api/export")
-def export():
-    payload = request.get_json(silent=True) or {}
-    title = " ".join(str(payload.get("title") or "General Search Chat").split())[:120]
-    messages = payload.get("messages")
-    if isinstance(messages, list):
-        messages = [item for item in messages[:100] if isinstance(item, dict) and item.get("role") in {"user", "assistant"} and str(item.get("content") or "").strip()]
-        if not messages:
-            return jsonify(ok=False, message="Start a chat before saving it."), 400
-        lines = [f"# {title}", "", f"Saved: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}"]
-        document_names = [str(name).strip() for name in (payload.get("document_names") or []) if str(name).strip()][:50]
-        if document_names:
-            lines += ["", "**Documents in context:** " + ", ".join(document_names)]
-        for item in messages:
-            heading = "You" if item["role"] == "user" else "General Search"
-            lines += ["", f"## {heading}", "", str(item.get("content") or "").strip()]
-            attachments = [str(name).strip() for name in (item.get("attachments") or []) if str(name).strip()][:50]
-            if attachments:
-                lines += ["", "**Attachments:** " + ", ".join(attachments)]
-            sources = [source for source in (item.get("sources") or []) if isinstance(source, dict) and source.get("url")][:50]
-            if sources:
-                lines += ["", "### Sources", ""]
-                for index, source in enumerate(sources, 1):
-                    lines.append(f"{index}. [{source.get('title') or source['url']}]({source['url']})")
+@app.post("/api/search")
+def search_start():
+    payload = request.form if request.files else (request.get_json(force=True, silent=True) or {})
+    query = str(payload.get("query") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    allowed_only = str(payload.get("allowed_only") or "").lower() in {"1", "true", "yes", "on"}
+    history_raw = payload.get("history") or []
+    if isinstance(history_raw, str):
+        try:
+            history = json.loads(history_raw)
+        except json.JSONDecodeError:
+            history = []
     else:
-        query = str(payload.get("query") or "").strip()
-        answer = str(payload.get("answer") or "").strip()
-        if not query or not answer:
-            return jsonify(ok=False, message="Run a search before exporting."), 400
-        lines = [f"# {title}", "", f"Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}", "", "## Research request", "", query, "", "## Answer", "", answer]
-        sources = [source for source in (payload.get("sources") or []) if isinstance(source, dict) and source.get("url")][:50]
-        if sources:
-            lines += ["", "## Sources", ""]
-            for index, source in enumerate(sources, 1):
-                lines.append(f"{index}. [{source.get('title') or source['url']}]({source['url']})")
-    content = ("\n".join(lines).strip() + "\n").encode()
-    filename = "".join(character if character.isalnum() or character in " .-_" else "-" for character in title).strip(" .-")
-    return send_file(BytesIO(content), mimetype="text/markdown", as_attachment=True, download_name=(filename or "general_search_result") + ".md")
+        history = history_raw if isinstance(history_raw, list) else []
+
+    uploaded_context = ""
+    if request.files:
+        extracted = []
+        for upload in request.files.getlist("files"):
+            if upload and upload.filename:
+                extracted.extend(extract_upload(upload))
+        uploaded_context = document_context(extracted)
+        if not query or query == LEGACY_ATTACHMENT_QUERY:
+            settings = get_settings()
+            selected_model = model or settings.get("model") or ""
+            try:
+                brief = ollama_json(
+                    settings["ollama_url"], selected_model,
+                    DOCUMENT_BRIEF_PROMPT + "\n\nDOCUMENT MATERIAL:\n" + uploaded_context[:80_000],
+                )
+                query = str(brief.get("search_request") or query or LEGACY_ATTACHMENT_QUERY).strip()
+            except Exception:
+                query = query or LEGACY_ATTACHMENT_QUERY
+
+    if not query:
+        return jsonify({"error": "Search query is required"}), 400
+    return jsonify(start_job(app, query, history, model, allowed_only, uploaded_context))
+
+
+@app.get("/api/search/<job_id>")
+def search_status(job_id):
+    job = JOBS.get(job_id)
+    return jsonify(job) if job else (jsonify({"error": "Unknown job"}), 404)
+
+
+@app.get("/api/search/<job_id>/download")
+def search_download(job_id):
+    job = JOBS.get(job_id)
+    if not job or job.get("status") != "completed":
+        return jsonify({"error": "Completed job not found"}), 404
+    body = str(job.get("message") or "")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return send_file(
+        BytesIO(body.encode("utf-8")), mimetype="text/markdown", as_attachment=True,
+        download_name=f"internet-pricing-{timestamp}.md",
+    )
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5053")), debug=os.environ.get("FLASK_DEBUG") == "1")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
