@@ -240,7 +240,9 @@ def install_generic_expansion_policy(search) -> None:
         original = _original_request(search, query)
         prepare_expansion_plan(search, original, category=resolved)
         canonical = [row["query"] for row in _state_for(original).plan.get("canonical", [])][:1]
-        return search.clean_queries(base[:3] + canonical)[:4]
+        # Do not drop category-specific exact searches merely to make room for an alias.
+        # Existing deterministic searches are authoritative; expansion is additive.
+        return search.clean_queries(base + canonical)[:6]
 
     def benchmark_status(evidence, question, category=None):
         return original_benchmark_status(_non_comparator_evidence(evidence), question, category)
