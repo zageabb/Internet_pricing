@@ -26,6 +26,15 @@ def _compact(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def _active_target(search, fallback: str) -> str:
+    getter = getattr(search, "active_request_query", None)
+    if callable(getter):
+        value = _compact(getter())
+        if value:
+            return value
+    return _compact(fallback)
+
+
 def _rating_tokens(value: str, unit: str) -> list[str]:
     pattern = rf"\b\d+(?:[.,]\d+)?\s*{re.escape(unit)}\b"
     rows = []
@@ -81,16 +90,24 @@ def _is_hv_profile(search, value: str) -> tuple[bool, str]:
 
 
 def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, content: str):
-    """Recognise obvious line-item/transaction price evidence without depending on LLM source review."""
-    is_hv, _category = _is_hv_profile(search, query)
-    if not is_hv:
+    """Recognise obvious line-item/transaction price evidence without bypassing specialist validators."""
+    is_hv, category = _is_hv_profile(search, query)
+    if not is_hv or not _has_visible_price(content):
         return False, []
-    if not _has_visible_price(content):
-        return False, []
+
+    target = _active_target(search, query)
+    if category == "power-transformers":
+        validator = getattr(search, "power_transformer_price_verdict", None)
+        if callable(validator):
+            valid, _reason, _details = validator(
+                {"title": title, "url": url, "text": content, "claims": [], "passages": []}, target
+            )
+            if not valid:
+                return False, []
 
     checker = getattr(search, "hv_candidate_relevance", None)
     if callable(checker):
-        ok, _reason, _score = checker({"title": title, "snippet": content[:5000], "url": url}, query)
+        ok, _reason, _score = checker({"title": title, "snippet": content[:5000], "url": url}, target)
         if not ok:
             return False, []
 
@@ -108,7 +125,7 @@ def _deterministic_hv_price_evidence(search, query: str, title: str, url: str, c
 
     claims = search.best_passages(
         content,
-        f"{query} price unit rate award winning bid quotation transaction import export",
+        f"{target} price unit rate award winning bid quotation transaction import export",
         limit=4,
         max_chars=2200,
     )
@@ -167,7 +184,8 @@ def install_pricing_recovery_policy(search) -> None:
         is_hv, category = _is_hv_profile(search, rewritten_question)
         if not is_hv:
             return result
-        if search.has_sufficient_commercial_benchmark(evidence, rewritten_question, category):
+        target = _active_target(search, rewritten_question)
+        if search.has_sufficient_commercial_benchmark(evidence, target, category):
             return result
 
         result = dict(result or {})
@@ -175,11 +193,18 @@ def install_pricing_recovery_policy(search) -> None:
         price_gap = "No sufficiently comparable commercial price benchmark retained yet"
         result["complete"] = False
         result["gaps"] = [price_gap] + [gap for gap in gaps if gap.casefold() != price_gap.casefold()]
-        if category == "power-transformers" and callable(getattr(search, "power_transformer_queries", None)):
-            recovery_queries = search.power_transformer_queries(rewritten_question, [])
+
+        attempted = {_compact(item).casefold() for item in queries or []}
+        if category == "power-transformers" and callable(getattr(search, "power_transformer_relaxed_queries", None)):
+            round_hint = 2 if len(attempted) < 6 else 3 if len(attempted) < 12 else 4
+            recovery_queries = search.power_transformer_relaxed_queries(target, round_hint)
+            if callable(getattr(search, "power_transformer_queries", None)):
+                recovery_queries += search.power_transformer_queries(target, [])
         else:
-            recovery_queries = hv_price_recovery_queries(rewritten_question)
-        result["queries"] = recovery_queries[:4]
+            recovery_queries = hv_price_recovery_queries(target)
+        result["queries"] = [
+            item for item in search.clean_queries(recovery_queries) if item.casefold() not in attempted
+        ][:4]
         return result
 
     def analyse_source(prompts, settings, model, query, title, url, content):
@@ -187,7 +212,7 @@ def install_pricing_recovery_policy(search) -> None:
         if deterministic:
             return (
                 "useful",
-                "Deterministically retained price-bearing specialist tender/transaction evidence",
+                "Deterministically retained price-bearing specialist tender/transaction evidence after specialist validation",
                 claims,
             )
         return original_analyse_source(prompts, settings, model, query, title, url, content)
@@ -199,8 +224,9 @@ def install_pricing_recovery_policy(search) -> None:
 
     def review_answer(job_id, prompts, settings, model, query, rewritten_question, requirements, subquestions,
                       answer, evidence, allow_indicative=False):
+        target = _active_target(search, query or rewritten_question)
         reviewed = original_review_answer(
-            job_id, prompts, settings, model, query, rewritten_question, requirements,
+            job_id, prompts, settings, model, target, target, requirements,
             subquestions, answer, evidence, allow_indicative=allow_indicative,
         )
         is_hv, _category = _is_hv_profile(search, rewritten_question)
@@ -221,7 +247,7 @@ def install_pricing_recovery_policy(search) -> None:
         )
         if final_web_fallback and _needs_indicative_budget(reviewed):
             supplement = _model_budget_supplement(
-                search, settings, model, rewritten_question,
+                search, settings, model, target,
                 headline_fallback=True, answer=reviewed,
             )
             if supplement:
@@ -230,8 +256,9 @@ def install_pricing_recovery_policy(search) -> None:
 
     def verify_citations(job_id, prompts, settings, model, rewritten_question, answer, evidence_text, evidence,
                          allow_indicative=False):
+        target = _active_target(search, rewritten_question)
         verified = original_verify_citations(
-            job_id, prompts, settings, model, rewritten_question, answer,
+            job_id, prompts, settings, model, target, answer,
             evidence_text, evidence, allow_indicative=allow_indicative,
         )
         is_hv, _category = _is_hv_profile(search, rewritten_question)
@@ -241,7 +268,7 @@ def install_pricing_recovery_policy(search) -> None:
         if allow_indicative:
             if _needs_indicative_budget(verified):
                 supplement = _model_budget_supplement(
-                    search, settings, model, rewritten_question,
+                    search, settings, model, target,
                     headline_fallback=True, answer=verified,
                 )
                 if supplement:
@@ -250,7 +277,7 @@ def install_pricing_recovery_policy(search) -> None:
 
         if "not web-verified" not in verified.lower():
             supplement = _model_budget_supplement(
-                search, settings, model, rewritten_question,
+                search, settings, model, target,
                 headline_fallback=False, answer=verified,
             )
             if supplement:
