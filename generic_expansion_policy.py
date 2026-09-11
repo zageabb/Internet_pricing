@@ -154,8 +154,6 @@ Rules:
         for query_text, reason in _clean_rows(parsed.get(level))[:2]:
             _register(level, query_text, reason, original)
 
-    # Always keep a deterministic broad family route available if the model returned
-    # no usable ladder. It is deliberately phrased as a comparator search, not a fact.
     if not any(state.plan[level] for level in LEVELS):
         base = _compact(original)[:220]
         _register("broad", f"{base} similar product equipment price benchmark", "Generic fallback comparator search", original)
@@ -169,7 +167,6 @@ def next_expansion_queries(search, attempted_queries=None, limit: int = 4) -> li
     state = _state_for(original)
     attempted = {_query_key(item) for item in (attempted_queries or [])}
     rows = []
-    # Walk the ladder in order. Fill the available search slots before moving wider.
     for level in LEVELS:
         pending = [row for row in state.plan.get(level, []) if _query_key(row["query"]) not in attempted]
         for row in pending:
@@ -179,7 +176,6 @@ def next_expansion_queries(search, attempted_queries=None, limit: int = 4) -> li
             if len(rows) >= max(1, int(limit)):
                 return rows
         if rows:
-            # Keep each round focused on no more than two adjacent ladder levels.
             next_index = LEVELS.index(level) + 1
             if next_index < len(LEVELS):
                 for row in state.plan.get(LEVELS[next_index], []):
@@ -196,9 +192,6 @@ def _non_comparator_evidence(evidence):
     rows = []
     for item in evidence or []:
         relation = _relation_for(item.get("query", ""))
-        # Canonical-name expansion still targets the same requested item. Wider
-        # comparator levels are useful evidence but cannot by themselves satisfy the
-        # exact commercial stopping threshold.
         if relation and relation.get("level") in {"near", "adjacent", "broad"}:
             continue
         rows.append(item)
@@ -213,6 +206,21 @@ def _enriched_query(query: str, relation: dict, original: str) -> str:
         f"Expansion rationale: {relation.get('reason') or relation['label']}\n"
         "Treat this expansion as a search hypothesis, not as proof of equivalence. Decide whether the source is an exact match, a useful comparator, or irrelevant. If useful only as a comparator, say what differs from the original request."
     )
+
+
+def _llm_review_expanded_source(search, prompts, settings, model, query, title, url, content, relation):
+    """Expanded hits deliberately bypass exact-match pre-rejectors and go to the final source-review LLM."""
+    original = relation.get("original_request") or _original_request(search, query)
+    review_query = _enriched_query(query, relation, original)
+    prompt = search.render(prompts["source_review"], query=review_query, title=title, url=url, content=content[:6_000])
+    try:
+        result = search.ollama_json(settings["ollama_url"], model, prompt)
+    except Exception as exc:
+        return "review_failed", f"Expanded-source quality check failed: {exc}", []
+    verdict = str(result.get("verdict") or "").strip().lower()
+    reason = search.clean_text(result.get("reason"), "Expanded hit was not useful to the original request")[:500]
+    claims = search.clean_items(result.get("claims", []), 5)
+    return ("useful", reason, claims) if verdict == "useful" else ("unusable", reason, [])
 
 
 def install_generic_expansion_policy(search) -> None:
@@ -232,8 +240,6 @@ def install_generic_expansion_policy(search) -> None:
         original = _original_request(search, query)
         prepare_expansion_plan(search, original, category=resolved)
         canonical = [row["query"] for row in _state_for(original).plan.get("canonical", [])][:1]
-        # Exact searches remain first. Add at most one canonical-name hypothesis to
-        # round one so a naming mismatch cannot cause five empty rounds.
         return search.clean_queries(base[:3] + canonical)[:4]
 
     def benchmark_status(evidence, question, category=None):
@@ -269,10 +275,7 @@ def install_generic_expansion_policy(search) -> None:
         relation = _relation_for(query)
         if not relation:
             return original_analyse_source(prompts, settings, model, query, title, url, content)
-        original = relation.get("original_request") or _original_request(search, query)
-        return original_analyse_source(
-            prompts, settings, model, _enriched_query(query, relation, original), title, url, content
-        )
+        return _llm_review_expanded_source(search, prompts, settings, model, query, title, url, content, relation)
 
     def evidence_ledger(evidence):
         enriched = []
