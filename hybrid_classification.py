@@ -224,6 +224,24 @@ def install_hybrid_classification(search) -> None:
                 f"Classification: {report['label']}", detail,
                 phase="Classifying request",
             )
+
+            prepare = getattr(search, "prepare_expansion_plan", None)
+            if callable(prepare):
+                try:
+                    plan = prepare(query, selected_model, settings, report.get("category")) or {}
+                    counts = [f"{name}={len(plan.get(name, []))}" for name in ("canonical", "near", "adjacent", "broad")]
+                    if any(plan.get(name) for name in ("canonical", "near", "adjacent", "broad")):
+                        search.event(
+                            job_id, "reasoning", "summary", "Prepared search expansion ladder",
+                            " · ".join(counts) + " · aliases/comparators are search hypotheses until source review",
+                            phase="Classifying request",
+                        )
+                except Exception as exc:
+                    search.event(
+                        job_id, "reasoning", "failed", "Search expansion planning unavailable",
+                        str(exc)[:500], phase="Classifying request",
+                    )
+
             return original_run(app, job_id, query, history, model, allowed_only, uploaded_context)
         finally:
             _set_context(None)
