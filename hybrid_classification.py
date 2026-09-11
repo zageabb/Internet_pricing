@@ -161,12 +161,28 @@ def _active_category() -> str | None:
     return getattr(_CONTEXT, "category", None)
 
 
-def _set_context(report: dict | None) -> None:
+def _active_request_query() -> str:
+    """Return the exact user/document-derived request that started the active research job.
+
+    Downstream policies use this instead of an LLM rewrite when product identity or
+    equipment ratings must remain invariant throughout search, evidence validation and
+    answer review.
+    """
+    return str(getattr(_CONTEXT, "request_query", "") or "")
+
+
+def _active_classification_report() -> dict | None:
+    report = getattr(_CONTEXT, "report", None)
+    return dict(report) if isinstance(report, dict) else None
+
+
+def _set_context(report: dict | None, request_query: str = "") -> None:
     if report:
         _CONTEXT.category = report.get("category")
         _CONTEXT.report = report
+        _CONTEXT.request_query = " ".join(str(request_query or report.get("query") or "").split())[:20_000]
     else:
-        for name in ("category", "report"):
+        for name in ("category", "report", "request_query"):
             if hasattr(_CONTEXT, name):
                 delattr(_CONTEXT, name)
 
@@ -194,7 +210,7 @@ def install_hybrid_classification(search) -> None:
         report = hybrid_classification_report(
             search, classification_input, selected_model, settings=settings
         )
-        _set_context(report)
+        _set_context(report, query)
         try:
             method = "LLM semantic classifier" if report["method"] == "llm" else "deterministic fallback"
             confidence = "" if report.get("confidence") is None else f" · confidence {report['confidence']:.2f}"
@@ -214,6 +230,8 @@ def install_hybrid_classification(search) -> None:
 
     search.deterministic_pricing_category = deterministic_pricing_category
     search.hybrid_classification_report = lambda query, model="": hybrid_classification_report(search, query, model)
+    search.active_request_query = _active_request_query
+    search.active_classification_report = _active_classification_report
     search.pricing_category = pricing_category
     search._run = run
     search._hybrid_classification_installed = True
