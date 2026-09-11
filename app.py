@@ -19,6 +19,7 @@ from hybrid_classification import install_hybrid_classification
 from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
 from pricing_runtime import install_hv_runtime
+from request_identity_policy import install_request_identity_policy
 from research_core_adapter import install_research_core_pricing
 from search import JOBS, list_models, ollama_json, start_job
 from settings_store import PROMPTS, get_settings, save_prompts, save_settings
@@ -32,6 +33,7 @@ install_category_profile_runtime(search_module)
 install_power_transformer_policy(search_module)
 install_pricing_recovery_policy(search_module)
 install_classification_coverage_guard(search_module)
+install_request_identity_policy(search_module)
 # Keep this last: semantic classification must happen before all profile/runtime routers.
 install_hybrid_classification(search_module)
 
@@ -118,23 +120,24 @@ def classifications_reset():
 
 @app.post("/api/classifications/test")
 def classifications_test():
-    """Deterministic classifier test retained for diagnostics and regression checks."""
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "").strip()[:20_000]
+    if not query:
+        return jsonify(ok=False, message="Enter a request to classify."), 400
+    model = str(payload.get("model") or "")[:200]
+    reporter = getattr(search_module, "hybrid_classification_report", None)
+    if callable(reporter):
+        return jsonify(ok=True, result=reporter(query, model))
+    return jsonify(ok=True, result=classification_report(query))
+
+
+@app.post("/api/classifications/test/deterministic")
+def classifications_test_deterministic():
     payload = request.get_json(silent=True) or {}
     query = str(payload.get("query") or "").strip()[:20_000]
     if not query:
         return jsonify(ok=False, message="Enter a request to classify."), 400
     return jsonify(ok=True, result=classification_report(query))
-
-
-@app.post("/api/classifications/test-hybrid")
-def classifications_test_hybrid():
-    """Run the same semantic-first classifier used by live search jobs."""
-    payload = request.get_json(silent=True) or {}
-    query = str(payload.get("query") or "").strip()[:20_000]
-    if not query:
-        return jsonify(ok=False, message="Enter a request to classify."), 400
-    requested_model = str(payload.get("model") or "").strip()[:200]
-    return jsonify(ok=True, result=search_module.hybrid_classification_report(query, requested_model))
 
 
 @app.post("/api/search")
