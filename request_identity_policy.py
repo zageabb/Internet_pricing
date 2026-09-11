@@ -103,14 +103,21 @@ def _visible_identity_price(search, candidate: dict, query: str, content: str = 
     return bool(PRICE_RE.search(corpus))
 
 
+def _equipment_request(query: str) -> str:
+    equipment = _compact(query)
+    equipment = re.sub(r"^\s*(?:pricing|price|cost)\s+(?:for|of)\s+", "", equipment, flags=re.I)
+    equipment = re.sub(r"\s+\b(?:price|prices|pricing|cost|costs)\b\s*$", "", equipment, flags=re.I)
+    return equipment.strip(" ,;:-")
+
+
 def consumer_initial_queries(search, query: str) -> list[str]:
-    original = _compact(query)
-    identity = _identity_phrase(search, original)
-    equipment = re.sub(r"\b(?:price|prices|pricing|cost|costs)\b.*$", "", original, flags=re.I).strip(" ,;:-")
+    # Round one keeps the complete user-supplied product and requested attributes.
+    # Only later rounds relax RAM/storage/etc.; the model identity is never relaxed.
+    equipment = _equipment_request(query)
     values = [
-        f'"{identity}" price',
-        f'"{identity}" retailer',
-        f"{equipment} price" if equipment else "",
+        f'"{equipment}" price' if equipment else "",
+        f"{equipment} retailer price" if equipment else "",
+        f"{equipment} supplier price" if equipment else "",
     ]
     return search.clean_queries([item for item in values if item])
 
@@ -169,14 +176,9 @@ def install_request_identity_policy(search) -> None:
         if profile != "consumer-retail":
             return original_pricing_queries(query, planned, resolved)
         original = _original_request(search, query)
-        kept = []
-        for item in search.clean_queries(planned or []):
-            matched, _reason = _identity_match(search, item, original)
-            if matched:
-                kept.append(item)
-        # Keep round one compact and identity-safe. Later rounds progressively remove
-        # quotation/specification clutter without dropping the actual model identity.
-        return search.clean_queries(consumer_initial_queries(search, original) + kept[:1])[:4]
+        # Do not let an LLM-planned alias compete in round one. Deterministic searches
+        # preserve the exact requested product and requested configuration.
+        return consumer_initial_queries(search, original)[:3]
 
     def subject_relevant_candidates(candidates, question, category=None):
         resolved = category or search.pricing_category(question)
