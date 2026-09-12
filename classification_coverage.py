@@ -72,8 +72,36 @@ def structured_evidence_records(search, evidence) -> list[dict]:
             "published_at": str(item.get("published_at") or "")[:100],
             "obtained_at": str(item.get("obtained_at") or "")[:100],
             "content_type": str(item.get("content_type") or "")[:200],
+            "benchmark_eligible": False,
         })
     return rows
+
+
+def _source_benchmark_eligible(search, item: dict, query: str, category: str) -> bool:
+    if item.get("kind") != "market_source":
+        return False
+    relation_getter = getattr(search, "query_expansion_relation", None)
+    relation = relation_getter(item.get("query", "")) if callable(relation_getter) else None
+    if relation and relation.get("level") in {"near", "adjacent", "broad"}:
+        return False
+
+    profile = search.pricing_profile(category) if hasattr(search, "pricing_profile") else category
+    if profile == "consumer-retail":
+        candidate = {
+            "title": item.get("title", ""),
+            "snippet": " ".join(item.get("passages") or [])[:4000],
+            "query": item.get("query", ""),
+            "url": item.get("url", ""),
+        }
+        try:
+            return bool(search.exact_priced_product_candidate(candidate, query, item.get("text", "")))
+        except Exception:
+            return False
+
+    try:
+        return bool(search.has_commercial_price([item]))
+    except Exception:
+        return False
 
 
 def _install_structured_evidence_export(search) -> None:
@@ -117,6 +145,11 @@ def _install_structured_evidence_export(search) -> None:
                 except Exception:
                     commercial_price_found = bool(search.has_commercial_price(market_records))
 
+            for item in market_records:
+                item["benchmark_eligible"] = bool(
+                    commercial_price_found and _source_benchmark_eligible(search, item, query, category)
+                )
+
             with search.LOCK:
                 job = search.JOBS.get(job_id)
                 if not job or str(job.get("status") or "").lower() != "completed":
@@ -127,6 +160,9 @@ def _install_structured_evidence_export(search) -> None:
                     "category": category,
                     "commercial_price_found": commercial_price_found,
                     "retained_market_sources": len(market_records),
+                    "benchmark_eligible_sources": sum(
+                        1 for item in market_records if item.get("benchmark_eligible")
+                    ),
                 }
 
     search.evidence_ledger = evidence_ledger_with_capture
