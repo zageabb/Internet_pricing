@@ -40,12 +40,7 @@ def category_followup_queries(question: str, profile: str) -> list[str]:
 
 
 def structured_evidence_records(search, evidence) -> list[dict]:
-    """Return a bounded machine-readable copy of retained research evidence.
-
-    The user-facing answer remains unchanged; this payload is for downstream systems such
-    as Should-Cost that need the retained passages rather than attempting to parse prices
-    back out of final Markdown.
-    """
+    """Return a bounded machine-readable copy of retained research evidence."""
     rows = []
     fx_url = str(getattr(search, "FX_URL", "") or "")
     for item in list(evidence or [])[:50]:
@@ -107,6 +102,10 @@ def _source_benchmark_eligible(search, item: dict, query: str, category: str) ->
 def _install_structured_evidence_export(search) -> None:
     """Attach retained evidence to completed jobs without changing the search loop."""
     if getattr(search, "_structured_evidence_export_installed", False):
+        return
+    # Some focused unit tests install only the coverage policy on a minimal fake.
+    # The export wrapper is a runtime concern and should simply remain inactive there.
+    if not hasattr(search, "evidence_ledger") or not hasattr(search, "_run"):
         return
 
     original_evidence_ledger = search.evidence_ledger
@@ -183,7 +182,6 @@ def install_classification_coverage_guard(search) -> None:
         )
         category = search.pricing_category(rewritten_question)
         profile = search.pricing_profile(category) if hasattr(search, "pricing_profile") else category
-        # HV-profile categories have their own stronger deterministic recovery policy.
         if profile == "hv-equipment":
             return result
 
