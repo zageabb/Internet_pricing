@@ -54,10 +54,12 @@ def test_completed_job_receives_structured_evidence_and_pricing_summary():
     fake_search.LOCK = threading.Lock()
     fake_search.evidence_ledger = lambda evidence: "ledger"
     fake_search.pricing_category = lambda query: "consumer-retail"
+    fake_search.pricing_profile = lambda category: category
     fake_search.pricing_intent = lambda left, right: True
     fake_search.implicit_product_pricing = lambda query: True
     fake_search.has_commercial_price = lambda evidence: bool(evidence)
     fake_search.has_sufficient_commercial_benchmark = lambda evidence, question, category: bool(evidence)
+    fake_search.exact_priced_product_candidate = lambda candidate, question, content="": "3 L" in content and "£2.50" in content
 
     def run(app, job_id, query, history, model, allowed_only, uploaded_context=""):
         fake_search.JOBS[job_id] = {"status": "running"}
@@ -71,7 +73,10 @@ def test_completed_job_receives_structured_evidence_and_pricing_summary():
 
     job = fake_search.JOBS["job-1"]
     assert job["retained_evidence"][0]["url"] == "https://shop.example/pepsi-max-3l"
+    assert job["retained_evidence"][0]["benchmark_eligible"] is True
     assert job["retained_evidence"][1]["kind"] == "currency_reference"
+    assert job["retained_evidence"][1]["benchmark_eligible"] is False
     assert job["pricing_evidence"]["is_pricing"] is True
     assert job["pricing_evidence"]["commercial_price_found"] is True
     assert job["pricing_evidence"]["retained_market_sources"] == 1
+    assert job["pricing_evidence"]["benchmark_eligible_sources"] == 1
