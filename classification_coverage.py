@@ -58,7 +58,7 @@ def structured_evidence_records(search, evidence) -> list[dict]:
         claims = [str(value)[:3_000] for value in (item.get("claims") or []) if str(value).strip()][:8]
         if not url or not (text.strip() or passages or claims):
             continue
-        kind = "currency_reference" if fx_url and url == fx_url else "market_source"
+        kind = "currency_reference" if fx_url and url.startswith(fx_url) else "market_source"
         rows.append({
             "source_id": item.get("source_id"),
             "kind": kind,
