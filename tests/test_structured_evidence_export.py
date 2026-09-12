@@ -24,11 +24,11 @@ def _evidence():
         {
             "source_id": 2,
             "title": "Reference exchange rates",
-            "url": "https://fx.example/rates",
+            "url": "https://fx.example/rates&quotes=GBP,USD",
             "query": "currency conversion",
-            "passages": ["GBP 0.75"],
-            "claims": [],
-            "text": "Reference FX rates",
+            "passages": ["Reference rates dated 2026-09-12. 1 GBP ≈ 1.35 USD"],
+            "claims": ["1 GBP ≈ 1.35 USD"],
+            "text": "1 GBP ≈ 1.35 USD",
             "obtained_at": "2026-09-12",
             "content_type": "application/json",
         },
@@ -71,6 +71,7 @@ def test_completed_job_receives_structured_evidence_and_pricing_summary():
 
     job = fake_search.JOBS["job-1"]
     assert job["retained_evidence"][0]["url"] == "https://shop.example/pepsi-max-3l"
+    assert job["retained_evidence"][1]["kind"] == "currency_reference"
     assert job["pricing_evidence"]["is_pricing"] is True
     assert job["pricing_evidence"]["commercial_price_found"] is True
     assert job["pricing_evidence"]["retained_market_sources"] == 1
