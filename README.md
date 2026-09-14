@@ -1,5 +1,31 @@
 # Internet Pricing
 
+## Ubuntu server deployment
+
+Verified on **14 September 2026** against the listeners, user systemd services,
+Docker port mappings and deployment registry on `192.168.1.249`.
+
+| Endpoint | Host TCP port | LAN URL |
+|---|---:|---|
+| Application | 5054 | http://192.168.1.249:5054/ |
+
+Checkout: `/home/zageabb/ollama-chat/internet-pricing`.
+
+These are **user** systemd units. Inspect them with:
+
+```bash
+systemctl --user status ollama-chat-internet-pricing.service
+systemctl --user cat ollama-chat-internet-pricing.service
+```
+
+Local verification URL: `http://127.0.0.1:5054/`. HTTP 200 was observed during this audit.
+
+Development defaults and container-internal ports elsewhere in this repository
+may differ from this host deployment. Use the live ports above when accessing
+this Ubuntu server; do not start a second copy on a port already occupied.
+
+[Complete Ubuntu port inventory](https://github.com/zageabb/universal-deployment-agent/blob/main/UBUNTU_PORTS.md).
+
 Internet Pricing is a pricing-focused fork of [General Search](https://github.com/zageabb/general-search). It keeps the same conversation-first interface, live research activity, cited Markdown answers, browser-local chat history, document uploads, settings, and Markdown export while specialising the research workflow for market pricing and budget estimates.
 
 The application is intended for difficult-to-price equipment and project packages where a simple retail search is not enough. It can search public procurement documents, schedules of rates, tender awards, purchase-order benchmarks, OEM technical pages, distributor listings and other relevant public evidence, then compare specification and scope before producing a cited budgetary estimate.
@@ -102,7 +128,7 @@ sudo .venv/bin/python -m playwright install-deps chromium
 
 After Python dependencies are installed on an existing host, `bash deploy/install-browser.sh` installs the compatible Chromium build. The script supports both a project-local `.venv` and this deployment's shared `../venv`; `INTERNET_PRICING_PYTHON` can explicitly override the interpreter. Set the same `PLAYWRIGHT_BROWSERS_PATH` in the application service environment.
 
-Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The active port defaults to `5053`; override it with the `PORT` environment variable if needed.
+Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The local development default is `5053`. On the Ubuntu server use `PORT=5054`; `5053` belongs to General Search.
 
 ## Free procurement index
 
