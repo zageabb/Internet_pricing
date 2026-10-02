@@ -130,6 +130,20 @@ After Python dependencies are installed on an existing host, `bash deploy/instal
 
 Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and model on the Settings page. The local development default is `5053`. On the Ubuntu server use `PORT=5054`; `5053` belongs to General Search.
 
+## Price currentisation API
+
+Internet Pricing exposes `POST /api/pricing/currentise` for deterministic historical-price adjustment. The caller supplies a low/expected/high price range, source/target dates, and a dated evidence-backed index series.
+
+The service:
+
+- calculates the source and target index values, linearly interpolating only between supplied dated points;
+- applies one transparent index-ratio factor to the whole price range;
+- returns the original and adjusted ranges, factor, index name, evidence sources and audit metadata;
+- refuses to extrapolate beyond the supplied index coverage;
+- never invents an inflation rate or index value.
+
+This endpoint is consumed by Should-Cost Intelligence V3 for LLM Knowledge currentisation and is intended for historical Internal/External benchmark normalisation as those channels migrate to the shared benchmark model.
+
 ## Free procurement index
 
 The app searches a local SQLite/FTS index of free public OCDS data before using
