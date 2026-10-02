@@ -20,6 +20,7 @@ from hybrid_classification import install_hybrid_classification
 from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
 from price_currentisation import CurrentisationError, currentise_price
+from price_index_catalog import load_price_index_catalog, select_price_index
 from pricing_runtime import install_hv_runtime
 from request_identity_policy import install_request_identity_policy
 from research_core_adapter import install_research_core_pricing
@@ -145,13 +146,61 @@ def classifications_test_deterministic():
     return jsonify(ok=True, result=classification_report(query))
 
 
+@app.post("/api/pricing/index/select")
+def pricing_index_select():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = select_price_index(
+            load_price_index_catalog(),
+            source_date=payload.get("source_date"),
+            target_date=payload.get("target_date"),
+            equipment_type=str(payload.get("equipment_type") or ""),
+            category=str(payload.get("category") or ""),
+            region=str(payload.get("region") or ""),
+        )
+    except CurrentisationError as exc:
+        return jsonify(ok=False, message=str(exc)), 422
+    return jsonify(ok=True, result=result)
+
+
 @app.post("/api/pricing/currentise")
 def pricing_currentise():
     payload = request.get_json(silent=True) or {}
+    working = dict(payload)
+    selection = None
+    if not isinstance(working.get("index"), dict) or not working.get("index", {}).get("name"):
+        try:
+            selection = select_price_index(
+                load_price_index_catalog(),
+                source_date=working.get("source_date"),
+                target_date=working.get("target_date"),
+                equipment_type=str(working.get("equipment_type") or ""),
+                category=str(working.get("category") or ""),
+                region=str(working.get("region") or ""),
+            )
+        except CurrentisationError as exc:
+            return jsonify(ok=False, message=str(exc)), 422
+        if selection.get("status") != "selected":
+            return jsonify(ok=True, result={
+                "status": "unavailable",
+                "reason": selection.get("reason") or "No suitable evidence-backed price index was selected.",
+                "index_selection": selection,
+            })
+        working["index"] = selection["index"]
+
     try:
-        result = currentise_price(payload)
+        result = currentise_price(working)
     except CurrentisationError as exc:
         return jsonify(ok=False, message=str(exc)), 422
+    result["index_selection"] = (
+        selection or {
+            "status": "manual_override",
+            "index_id": "",
+            "index": working.get("index"),
+            "score": None,
+            "reasons": ["caller-supplied manual index override"],
+        }
+    )
     return jsonify(ok=True, result=result)
 
 
