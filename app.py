@@ -19,6 +19,7 @@ from generic_expansion_policy import install_generic_expansion_policy
 from hybrid_classification import install_hybrid_classification
 from power_transformer_policy import install_power_transformer_policy
 from pricing_recovery_policy import install_pricing_recovery_policy
+from price_currentisation import CurrentisationError, currentise_price
 from pricing_runtime import install_hv_runtime
 from request_identity_policy import install_request_identity_policy
 from research_core_adapter import install_research_core_pricing
@@ -142,6 +143,16 @@ def classifications_test_deterministic():
     if not query:
         return jsonify(ok=False, message="Enter a request to classify."), 400
     return jsonify(ok=True, result=classification_report(query))
+
+
+@app.post("/api/pricing/currentise")
+def pricing_currentise():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = currentise_price(payload)
+    except CurrentisationError as exc:
+        return jsonify(ok=False, message=str(exc)), 422
+    return jsonify(ok=True, result=result)
 
 
 @app.post("/api/search")
