@@ -132,17 +132,23 @@ Open [http://127.0.0.1:5053](http://127.0.0.1:5053). Set your Ollama URL and mod
 
 ## Price currentisation API
 
-Internet Pricing exposes `POST /api/pricing/currentise` for deterministic historical-price adjustment. The caller supplies a low/expected/high price range, source/target dates, and a dated evidence-backed index series.
+Internet Pricing exposes `POST /api/pricing/currentise` for deterministic historical-price adjustment. The caller supplies a low/expected/high price range plus source/target dates. A caller may supply a dated evidence-backed index explicitly; otherwise Internet Pricing can select one from a governed catalogue.
+
+Automatic index selection is deterministic and uses the requested equipment/category, region and date coverage. Catalogue data is supplied by deployment configuration through `PRICE_INDEX_CATALOG_JSON` or `PRICE_INDEX_CATALOG_FILE`. There are deliberately no built-in index values: if no governed series covers the requested context and dates, currentisation returns `unavailable` rather than inventing inflation.
+
+`POST /api/pricing/index/select` exposes the selector independently for diagnostics and audit. The selection result includes the chosen index ID, matching reasons, date coverage and source references.
 
 The service:
 
+- prefers a caller-supplied index as an explicit manual override;
+- otherwise selects the best governed catalogue series by category/equipment, region and date coverage;
 - calculates the source and target index values, linearly interpolating only between supplied dated points;
 - applies one transparent index-ratio factor to the whole price range;
-- returns the original and adjusted ranges, factor, index name, evidence sources and audit metadata;
+- returns the original and adjusted ranges, factor, index name, selection trace, evidence sources and audit metadata;
 - refuses to extrapolate beyond the supplied index coverage;
 - never invents an inflation rate or index value.
 
-This endpoint is consumed by Should-Cost Intelligence V3 for LLM Knowledge currentisation and is intended for historical Internal/External benchmark normalisation as those channels migrate to the shared benchmark model.
+This endpoint is consumed by Should-Cost Intelligence V3 for LLM Knowledge and historical Internal/External benchmark currentisation.
 
 ## Free procurement index
 
