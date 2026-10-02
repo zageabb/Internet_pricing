@@ -98,6 +98,20 @@ Completion criteria:
 
 Notes:
 
+## Parallel development coordination
+
+Use the coordination fields on every active DEV item when parallel work is possible.
+
+- **Owner/Agent** — the person or AI agent currently responsible for the item.
+- **Branch** — the working branch or worktree used for the item.
+- **Depends on** — DEV items, decisions or external prerequisites that must complete first.
+- **Can run in parallel with** — DEV items that are safe to develop concurrently without conflicting ownership or sequencing.
+- **Integration status** — for example: not started, isolated, ready for integration, integrated, or integration blocked.
+
+Before starting parallel work, agents should check these fields and avoid claiming the same item, branch or overlapping integration responsibility. If two items touch the same subsystem or files, record the conflict explicitly and sequence or coordinate integration rather than assuming they are independent.
+
+Parallel execution does not weaken the completion standard: each DEV item still requires its own implementation, tests/validation, CI evidence where applicable, and integration/merge evidence before it can be marked COMPLETE.
+
 ## Maintenance rule
 
 Update this file during the same development pass that changes implementation. When prose and repository evidence disagree, repository evidence wins.
