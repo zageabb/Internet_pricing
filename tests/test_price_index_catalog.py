@@ -1,3 +1,5 @@
+import json
+
 from price_index_catalog import select_price_index
 
 
@@ -72,3 +74,55 @@ def test_selector_refuses_series_without_required_date_coverage():
 
     assert result["status"] == "unavailable"
     assert "covers the requested dates" in result["reason"]
+
+
+
+def test_currentisation_endpoint_automatically_selects_catalog_index(monkeypatch):
+    monkeypatch.setenv("PRICE_INDEX_CATALOG_JSON", json.dumps({"indexes": CATALOG}))
+    import app as app_module
+
+    client = app_module.app.test_client()
+    response = client.post("/api/pricing/currentise", json={
+        "source_date": "2022-01-01",
+        "target_date": "2026-10-02",
+        "equipment_type": "11 kV AIS switchgear",
+        "category": "hv-equipment",
+        "region": "United Kingdom",
+        "price": {"low": 800000, "expected": 1000000, "high": 1200000, "currency": "USD"},
+    })
+
+    assert response.status_code == 200
+    result = response.get_json()["result"]
+    assert result["status"] == "completed"
+    assert result["index_selection"]["status"] == "selected"
+    assert result["index_selection"]["index_id"] == "uk-switchgear"
+    assert result["index_name"] == "UK switchgear equipment"
+
+
+def test_currentisation_endpoint_manual_index_overrides_catalog(monkeypatch):
+    monkeypatch.setenv("PRICE_INDEX_CATALOG_JSON", json.dumps({"indexes": CATALOG}))
+    import app as app_module
+
+    client = app_module.app.test_client()
+    response = client.post("/api/pricing/currentise", json={
+        "source_date": "2022-01-01",
+        "target_date": "2026-10-02",
+        "equipment_type": "11 kV AIS switchgear",
+        "category": "hv-equipment",
+        "region": "United Kingdom",
+        "price": {"low": 800000, "expected": 1000000, "high": 1200000, "currency": "USD"},
+        "index": {
+            "name": "Manual governed index",
+            "points": [
+                {"date": "2022-01-01", "value": 100, "source": "manual-source"},
+                {"date": "2026-10-02", "value": 110, "source": "manual-source"},
+            ],
+        },
+    })
+
+    assert response.status_code == 200
+    result = response.get_json()["result"]
+    assert result["status"] == "completed"
+    assert result["index_name"] == "Manual governed index"
+    assert result["index_selection"]["status"] == "manual_override"
+    assert result["sources"] == ["manual-source"]
